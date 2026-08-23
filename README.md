@@ -31,13 +31,18 @@ without your approval.
 
 ## How it works
 
-```
-traces + judge results (JSONL)  +  your prompt template
-  → distill      deterministic reduction, judge rationale kept verbatim
-  → attribute    which instruction failed, which is missing — with verified quotes
-  → aggregate    failure themes, counts, cross-run ledgers (no model, no vibes)
-  → synthesize   ≤5 proposed edits, checked by mechanical gates
-  → apply        you review each card and decide
+```mermaid
+flowchart TD
+    A[Your LLM app] -->|"traces + judge scores<br/>+ rationales (JSONL)"| B[distill<br/>deterministic reduction]
+    P[Prompt template] --> B
+    B --> C[attribute<br/>which instruction failed, which is missing<br/>quotes verified in code]
+    C --> D[aggregate<br/>failure themes, counts, cross-run ledgers<br/>no model, no vibes]
+    D --> E["synthesize<br/>≤5 proposed edits<br/>checked by mechanical gates"]
+    E --> F{{"apply — human gate<br/>one card per edit: diff + evidence<br/>accept / reject"}}
+    F -->|accepted edits| G[Updated prompt template]
+    F -.->|rejections remembered| E
+    G -->|you deploy| A
+    A -->|"next batch: trend report<br/>rate before → after, with CIs"| F
 ```
 
 Every quote is substring-verified in code against the stored trace — a model
