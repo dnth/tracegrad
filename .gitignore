@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.venv/
+dist/
+.pytest_cache/
+.tracegrad/
+uv.lock
