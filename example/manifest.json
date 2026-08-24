@@ -1,0 +1,7 @@
+{
+  "template_file": "prompt.md",
+  "engine": "none",
+  "vars": {},
+  "sampling": {"temperature": 0.2},
+  "judge_fingerprint": "support-judge-v3"
+}

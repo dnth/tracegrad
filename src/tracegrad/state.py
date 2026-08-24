@@ -56,9 +56,7 @@ class StateLayout:
         return (self.distilled, self.ledgers, self.reports, self.snapshots)
 
     def resume_path(self, run_id: str) -> Path:
-        if not run_id or Path(run_id).name != run_id:
-            raise ValueError("run_id must be a non-empty path-safe name")
-        return self.runs / run_id / "resume.json"
+        return self.runs / validate_run_id(run_id) / "resume.json"
 
     @property
     def state_dir(self) -> Path:
@@ -86,6 +84,37 @@ def _layout(project_root: str | Path | StateLayout) -> StateLayout:
     )
 
 
+class PathContainmentError(StateError):
+    """A path that would escape the directory it is supposed to stay inside."""
+
+
+def validate_run_id(run_id: str) -> str:
+    """Reject a run id that is not a plain directory name.
+
+    Run ids reach the filesystem, and some of them arrive from a manifest or a
+    persisted proposal rather than from the person running the command.
+    """
+
+    if not run_id or Path(run_id).name != run_id or run_id in {".", ".."}:
+        raise ValueError("run_id must be a non-empty path-safe name")
+    return run_id
+
+
+def contained_path(base: str | Path, relative: str | Path) -> Path:
+    """Resolve ``relative`` under ``base``, refusing anything that escapes it.
+
+    The prompt template is named by a manifest, and a manifest is a file people
+    share.  Without this, ``template_file: "../../../.bashrc"`` would make
+    ``apply`` — the one command that writes — write there.
+    """
+
+    root = Path(base).resolve()
+    target = (root / Path(relative)).resolve()
+    if target != root and root not in target.parents:
+        raise PathContainmentError(f"{relative} resolves outside {root}")
+    return target
+
+
 def _fsync_directory(directory: Path) -> None:
     descriptor = os.open(directory, os.O_RDONLY)
     try:
@@ -106,25 +135,69 @@ def initialize(project_root: str | Path) -> StateLayout:
     return layout
 
 
+def _pid_in(path: Path) -> int | None:
+    """Read the owning pid out of a lock file, if it records one."""
+
+    try:
+        content = path.read_text(encoding="ascii")
+    except (OSError, UnicodeDecodeError):
+        return None
+    _, _, value = content.strip().partition("pid=")
+    return int(value) if value.isdigit() else None
+
+
+def _process_is_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        # The process exists and belongs to someone else.
+        return True
+    except OSError:
+        return True
+    return True
+
+
 class StateLock:
-    """An exclusive lock file acquired with ``O_EXCL``."""
+    """An exclusive lock file acquired with ``O_EXCL``.
+
+    The lock records its owning pid, so a lock left behind by a killed process
+    can be reclaimed.  Without that, one ``SIGKILL`` would wedge the project
+    until someone deleted a file they have no reason to know about — and the
+    resume-after-a-kill path is exactly the path that needs the lock back.
+    """
 
     def __init__(self, path: str | Path):
         self.path = Path(path)
         self._descriptor: int | None = None
+        self.broke_stale_lock: bool = False
 
     def acquire(self) -> "StateLock":
         if self._descriptor is not None:
             raise StateLockError(f"lock already held by this owner: {self.path}")
         self.path.parent.mkdir(parents=True, exist_ok=True)
         try:
-            descriptor = os.open(
-                self.path,
-                os.O_CREAT | os.O_EXCL | os.O_WRONLY,
-                0o600,
-            )
+            descriptor = self._open()
         except FileExistsError as exc:
-            raise StateLockError(f"lock already held: {self.path}") from exc
+            owner = _pid_in(self.path)
+            if owner is not None and not _process_is_alive(owner):
+                self.path.unlink(missing_ok=True)
+                self.broke_stale_lock = True
+                try:
+                    descriptor = self._open()
+                except FileExistsError as race:
+                    raise StateLockError(f"lock already held: {self.path}") from race
+                # Two processes can see the same dead pid and both try to
+                # reclaim, so confirm the file on disk is still the one this
+                # process created before trusting the lock.
+                if not self._owns_file(descriptor):
+                    os.close(descriptor)
+                    raise StateLockError(
+                        f"lost the race to reclaim a stale lock: {self.path}"
+                    )
+            else:
+                raise StateLockError(f"lock already held: {self.path}") from exc
         try:
             os.write(descriptor, f"pid={os.getpid()}\n".encode("ascii"))
             os.fsync(descriptor)
@@ -135,6 +208,19 @@ class StateLock:
         self._descriptor = descriptor
         _fsync_directory(self.path.parent)
         return self
+
+    def _open(self) -> int:
+        return os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+
+    def _owns_file(self, descriptor: int) -> bool:
+        """Whether the path still names the file this descriptor refers to."""
+
+        try:
+            held = os.fstat(descriptor)
+            on_disk = os.stat(self.path)
+        except OSError:
+            return False
+        return (held.st_dev, held.st_ino) == (on_disk.st_dev, on_disk.st_ino)
 
     def release(self) -> None:
         descriptor = self._descriptor

@@ -54,6 +54,8 @@ class Manifest(_ContractModel):
     vars: dict[StrictStr, StrictStr] = Field(default_factory=dict)
     sampling: dict[StrictStr, JsonScalar] = Field(default_factory=dict)
     judge_fingerprint: StrictStr = Field(min_length=1)
+    canary_scores: dict[StrictStr, Score] = Field(default_factory=dict)
+    """Trace ids with a known-good judge score, to catch judge drift."""
 
 
 class Trace(_ContractModel):
@@ -112,6 +114,12 @@ class Cluster(_ContractModel):
 class Report(_ContractModel):
     applied_prompt_hash: StrictStr = Field(min_length=1)
     clusters: list[Cluster] = Field(default_factory=list)
+    instrument_fingerprint: StrictStr | None = None
+    """The attribution instrument these counts were measured with.
+
+    Two reports measured with different instruments are not comparable, so the
+    trend report says so rather than quietly differencing them.
+    """
 
 
 class StepVerdict(_ContractModel):

@@ -11,9 +11,10 @@ proposes a small set of edits to your prompt template — each one backed by ver
 quotes from real traces, capped at five per run, and gated by you. It never writes
 without your approval.
 
-> **Status: pre-release.** The design spec is complete and reviewed; implementation
-> is in progress. See the [implementation plan](../../issues/1). The interface
-> described below is the target, not yet the shipping tool.
+> **Status: v0.1.0, not yet published to PyPI.** The pipeline below runs end to
+> end against the batch in [`example/`](example/). See the
+> [implementation plan](../../issues/1) for what is deferred past v0.1.0
+> (A/B mode, replay hook, the `jinja-basic` template engine).
 
 ## Why
 
@@ -50,6 +51,11 @@ cannot confabulate evidence past the gate. On the next batch, tracegrad shows yo
 how each accepted edit's failure theme moved, with confidence intervals, so you
 know whether it worked before you trust it.
 
+Two batches are only compared when they were measured the same way. The model,
+its sampling, and every version in the deterministic core are folded into an
+instrument fingerprint that each report carries; if it changed, tracegrad says
+the batches are not comparable rather than differencing them anyway.
+
 ## What you need
 
 - Your traces exported as JSONL: `{trace_id, input, output, judge: {score,
@@ -62,7 +68,7 @@ know whether it worked before you trust it.
   - a coding-agent harness you're already logged into (`claude` supported
     out of the box; others are a config entry).
 
-## Usage (target interface)
+## Usage
 
 ```sh
 uv tool install tracegrad
@@ -74,6 +80,55 @@ tracegrad run --traces batch.jsonl --manifest manifest.json             # analyz
 tracegrad apply                                                         # review, accept/reject
 tracegrad status                                                        # budget, trends, ledgers
 ```
+
+`run` prints one review card per proposed edit — the diff, the verbatim quotes
+behind it, and any flags — and writes the proposal to `.tracegrad/`. Nothing
+touches your prompt until `tracegrad apply`. `apply --revert` restores the
+snapshot taken before the write.
+
+Two more commands exist for staged use: `tracegrad attribute` runs the paid
+attribution pass alone and caches it, and `tracegrad propose` then produces the
+proposal for the cost of a single synthesis call. `tracegrad trends` compares
+the last two runs.
+
+Attribution is one model call per trace, so `run --jobs 8` is worth setting on
+any batch above a handful of traces.
+
+### Try it on the bundled example
+
+`example/` holds a synthetic 13-trace batch for a support agent, its manifest,
+and the prompt template it was generated against:
+
+```sh
+git clone https://github.com/dnth/tracegrad && cd tracegrad
+uv run tracegrad init
+uv run tracegrad run \
+  --traces example/batch.jsonl \
+  --manifest example/manifest.json \
+  --base-directory example \
+  --estimate
+```
+
+The estimate reports 12 traces, not 13: one has a judge rationale too short to
+attribute, and ingest drops it with a named reason rather than counting it.
+Dropping `--estimate` runs the real analysis, which needs a model configured —
+see *What you need* above.
+
+### The manifest
+
+```json
+{
+  "template_file": "prompt.md",
+  "engine": "none",
+  "vars": {},
+  "sampling": {"temperature": 0.2},
+  "judge_fingerprint": "support-judge-v3"
+}
+```
+
+`template_file` resolves relative to `--base-directory`. `engine` is `none` or
+`format`; it is declared, never guessed. `judge_fingerprint` is how tracegrad
+tells you that trends across a judge change are not comparable.
 
 ### Project configuration
 
@@ -92,10 +147,42 @@ convergenceRuns = 2
 
 [harness_presets.attribution]
 provider = "openai"
+model = "openai/gpt-4.1-mini"
+jobs = 8              # attribute this many traces concurrently
 
 [harness_presets.synthesis]
 provider = "claude"
 ```
+
+Preset fields: `provider` (`openai`, `claude`, or `command`), `model`,
+`temperature`, `reasoning_effort`, `jobs`, `command`, `env`, `timeoutSeconds`,
+`enabled`. Attribution defaults to `temperature = 0` — it is a measurement, and
+provider-default sampling would make its rates irreproducible. The sampling in
+force is folded into the instrument fingerprint, so changing it invalidates the
+attribution cache instead of silently mixing two instruments in one rate.
+
+If a tier's configured provider cannot run on this machine — no API key, no
+harness binary — tracegrad falls through to the other provider and says so in
+the run output. It never falls back silently: the backend that actually ran is
+recorded in the instrument fingerprint, so a report cannot hide which model
+measured it.
+
+## State on disk
+
+`tracegrad init` creates `.tracegrad/` and git-ignores it:
+
+```
+.tracegrad/
+  distilled/    content-addressed distilled traces — the only text a quote may cite
+  ledgers/      append-only JSONL: runs, gaps, rejections, applied edits
+  reports/      per-run theme counts, the input to trend comparison
+  runs/         per-run proposal, resume checkpoint, and autopsy of dropped proposals
+  snapshots/    the prompt as it was before each apply
+```
+
+Everything except `apply` only reads and appends. A killed run resumes from its
+checkpoint, and the attribution cache means it does not pay for the same traces
+twice.
 
 ## What tracegrad is not
 
