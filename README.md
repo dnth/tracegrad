@@ -75,6 +75,28 @@ tracegrad apply                                                         # review
 tracegrad status                                                        # budget, trends, ledgers
 ```
 
+### Project configuration
+
+tracegrad reads an optional TOML file named `.tracegradrc` from the project root.
+If it is absent, `neverDelete = []`, `minEffect = 0.05`, `minCoverage = 0.8`,
+and `convergenceRuns = 2` apply. The default attribution and synthesis harness
+providers are `openai` and `claude`. The supported top-level keys are
+`neverDelete`, `minEffect`, `minCoverage`, `convergenceRuns`, and
+`harness_presets`; see the package configuration model for the preset fields.
+
+```toml
+neverDelete = ["prompt/identity"]
+minEffect = 0.05
+minCoverage = 0.8
+convergenceRuns = 2
+
+[harness_presets.attribution]
+provider = "openai"
+
+[harness_presets.synthesis]
+provider = "claude"
+```
+
 ## What tracegrad is not
 
 - Not an autonomous loop. Cross-batch trends are advisory — statistics with error
