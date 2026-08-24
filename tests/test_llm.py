@@ -228,7 +228,8 @@ def test_command_backend_claude_preset_argv() -> None:
     assert backend.command[index + 1] == ""
     assert "--strict-mcp-config" in backend.command
     mcp_index = backend.command.index("--mcp-config")
-    assert backend.command[mcp_index + 1] == "{}"
+    # The real CLI validates this shape and rejects a bare "{}".
+    assert backend.command[mcp_index + 1] == '{"mcpServers":{}}'
     settings_index = backend.command.index("--settings")
     assert backend.command[settings_index + 1] == "{}"
 

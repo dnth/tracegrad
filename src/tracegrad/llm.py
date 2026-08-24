@@ -335,8 +335,10 @@ class CommandBackend:
         "--allowed-tools",
         "",
         "--strict-mcp-config",
+        # An empty object is rejected: the CLI validates the shape, and the
+        # shape it wants is an mcpServers record that happens to be empty.
         "--mcp-config",
-        "{}",
+        '{"mcpServers":{}}',
         "--settings",
         "{}",
     )
