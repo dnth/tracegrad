@@ -18,6 +18,8 @@ DEFAULT_RC_FILENAME = ".tracegradrc"
 DEFAULT_MIN_EFFECT = 0.05
 DEFAULT_MIN_COVERAGE = 0.8
 DEFAULT_CONVERGENCE_RUNS = 2
+DEFAULT_ATTRIBUTION_TEMPERATURE = 0.0
+"""Attribution is a measurement, so it samples deterministically where it can."""
 
 _ConfigNumber: TypeAlias = StrictFloat | StrictInt
 
@@ -33,6 +35,9 @@ class HarnessPreset(BaseModel):
 
     provider: StrictStr = "command"
     model: StrictStr | None = None
+    temperature: StrictFloat | StrictInt | None = None
+    reasoning_effort: StrictStr | None = None
+    jobs: StrictInt = Field(default=1, ge=1)
     command: StrictStr | list[StrictStr] | None = None
     env: dict[StrictStr, StrictStr] = Field(default_factory=dict)
     timeoutSeconds: StrictInt | StrictFloat | None = Field(default=None, ge=0)
