@@ -84,6 +84,31 @@ tracegrad status                                                        # budget
 - Not magic attribution. It optimizes against your judge; if your judge is wrong,
   tracegrad is confidently wrong with it. Freeze and version your judge.
 
+## How it compares
+
+Most prompt optimizers are **search loops**: they need to re-run your app (or a
+callable of it) hundreds of times to score candidate prompts. If all you have is
+a folder of traces from production, they cannot help you. tracegrad is built for
+exactly that case: static traces in, evidenced edit proposals out, zero re-runs
+required.
+
+| | tracegrad | DSPy / GEPA / MIPROv2 | TextGrad | ProTeGi | promptfoo | Langfuse / LangSmith | backpass |
+|---|---|---|---|---|---|---|---|
+| What it is | Offline prompt optimizer | Search-based prompt optimizers | Gradient-style text optimizer | Beam-search prompt editor | Eval harness | Observability + eval platform | Agent-memory optimizer |
+| Needs to run your app | **No — static traces only** | Yes, many rollouts | Yes | Yes | Yes (it runs the evals) | No | No (reads transcripts) |
+| Input | JSONL traces + judge scores | A program + metric callable | Differentiable pipeline | Task + eval set | Configs + test cases | Instrumented app | Session transcripts |
+| Output | ≤5 evidenced edits to your prompt | A rewritten prompt/program | Updated prompt | Updated prompt | Scores and diffs | Dashboards, datasets | Edits to AGENTS.md/CLAUDE.md |
+| Evidence per change | Verbatim quotes, substring-verified in code | Aggregate score only | Aggregate score only | Aggregate score only | n/a | n/a | Verbatim quotes |
+| Human approval gate | **Every edit** | No | No | No | n/a | n/a | Every edit |
+| Token-budget discipline | Yes — additions must pay for themselves | No | No | No | n/a | n/a | Yes |
+| Tracks whether an edit worked | Next-batch trend report with CIs | Score during search | Score during search | Score during search | Yes (re-run evals) | Yes (dashboards) | Informal |
+| Harness / stack coupling | None — bring JSONL | DSPy programs | PyTorch-style graphs | Own loop | Its own runner | SDK instrumentation | Claude Code sessions |
+
+Two honest notes: if you *can* re-run your app cheaply against a metric,
+GEPA-style search will explore far more of the prompt space than tracegrad ever
+will — use it. And observability platforms are complementary, not competing:
+they're a fine place to *export* the traces tracegrad consumes.
+
 ## Prior art
 
 The discipline layer — evidence gating, ledgers, edit caps, budget, human gate —
