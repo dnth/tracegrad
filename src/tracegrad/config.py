@@ -21,6 +21,7 @@ DEFAULT_CONVERGENCE_RUNS = 2
 
 _ConfigNumber: TypeAlias = StrictFloat | StrictInt
 
+
 class ConfigError(ValueError):
     """A malformed or invalid tracegrad rc file."""
 

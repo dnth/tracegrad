@@ -203,12 +203,15 @@ def append_jsonl(path: str | Path, record: Mapping[str, object]) -> None:
 
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
-    encoded = json.dumps(
-        dict(record),
-        ensure_ascii=False,
-        separators=(",", ":"),
-        allow_nan=False,
-    ).encode("utf-8") + b"\n"
+    encoded = (
+        json.dumps(
+            dict(record),
+            ensure_ascii=False,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+        + b"\n"
+    )
     with target.open("ab") as handle:
         handle.write(encoded)
         handle.flush()
