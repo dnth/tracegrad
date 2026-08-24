@@ -84,6 +84,33 @@ tracegrad status                                                        # budget
 - Not magic attribution. It optimizes against your judge; if your judge is wrong,
   tracegrad is confidently wrong with it. Freeze and version your judge.
 
+## Beyond system prompts
+
+tracegrad optimizes a **text artifact that steers model behavior**, using traces
+where that artifact's version is known, a judge with rationales, and quotes
+verified against the artifact. The system prompt is the first target, not the
+only one. The same loop applies to:
+
+- **Tool and function descriptions.** An agent that picks the wrong tool or
+  passes bad arguments usually failed because a description misled it. Each
+  description is an instruction with its own lineage; "called `search` instead
+  of `lookup`" is an attributable theme.
+- **Few-shot examples.** Models imitate specific exemplars, so attribution is
+  crisp: "replace example 3 — it teaches the wrong output format."
+- **Skill files, runbooks, style guides.** Anything an agent loads and follows.
+  Violations attribute back to the ambiguous or missing rule.
+- **RAG knowledge-base entries.** Attribute a wrong answer to the retrieved
+  chunk that misled the model, then propose an edit to that chunk. Requires
+  chunk IDs in your traces.
+- **Agent memory files** (CLAUDE.md / AGENTS.md) — this is
+  [backpass](https://github.com/kunchenguid/backpass)'s home turf.
+
+What doesn't fit: anything without quotable text spans — sampling parameters,
+model choice, weights. No spans, no evidence gate.
+
+v0.1 tracks a single prompt template. Multi-artifact support (tool descriptions
+first) is a planned direction.
+
 ## How it compares
 
 Most prompt optimizers are **search loops**: they need to re-run your app (or a
