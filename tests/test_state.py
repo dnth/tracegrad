@@ -65,3 +65,37 @@ def test_initialize_creates_layout_and_gitignore(tmp_path: Path) -> None:
     for directory in layout.data_directories:
         assert directory.is_dir()
     assert layout.resume_directory.is_dir()
+
+
+def test_a_lock_left_by_a_dead_process_is_reclaimed(tmp_path: Path) -> None:
+    lock_path = tmp_path / "run.lock"
+    # A pid that cannot be running: the file records an owner that is gone.
+    lock_path.write_text("pid=2147483646\n", encoding="ascii")
+
+    lock = StateLock(lock_path).acquire()
+    try:
+        assert lock.broke_stale_lock is True
+    finally:
+        lock.release()
+
+    assert not lock_path.exists()
+
+
+def test_a_lock_held_by_a_live_process_is_not_reclaimed(tmp_path: Path) -> None:
+    import os
+
+    lock_path = tmp_path / "run.lock"
+    lock_path.write_text(f"pid={os.getpid()}\n", encoding="ascii")
+
+    with pytest.raises(StateLockError, match="already held"):
+        StateLock(lock_path).acquire()
+
+    assert lock_path.exists()
+
+
+def test_a_lock_without_a_readable_pid_is_left_alone(tmp_path: Path) -> None:
+    lock_path = tmp_path / "run.lock"
+    lock_path.write_text("garbage\n", encoding="ascii")
+
+    with pytest.raises(StateLockError, match="already held"):
+        StateLock(lock_path).acquire()
