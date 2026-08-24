@@ -140,8 +140,17 @@ they're a fine place to *export* the traces tracegrad consumes.
 
 The discipline layer — evidence gating, ledgers, edit caps, budget, human gate —
 is adapted from [backpass](https://github.com/kunchenguid/backpass), which does
-this for agent memory files. tracegrad applies it where an explicit judge signal
-exists, and swaps transcript archaeology for measurable loss.
+this for agent memory files.
+
+Both tools read traces, but different kinds. backpass reads raw Claude Code
+session transcripts, which carry no explicit failure signal — it spends model
+budget on transcript archaeology: deciding whether a session even contains a
+failure, from user corrections and retries. tracegrad's traces arrive with a
+judge score and rationale attached, so the failure signal is already explicit,
+and the budget goes to attribution instead — mapping each rationale onto the
+specific instruction that caused it. That swap is also what makes tracegrad
+harness-agnostic: it takes JSONL you export from any stack, where backpass is
+coupled to Claude Code's transcript format.
 
 ## License
 
