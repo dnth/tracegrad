@@ -25,11 +25,12 @@ from typing import Callable, Mapping, Sequence
 from pydantic import ValidationError
 
 from .canonical import canonical_json, content_hash
-from .config import TracegradConfig
+from .config import DEFAULT_ATTRIBUTION_TEMPERATURE, TracegradConfig
 from .distill import DistilledTrace
 from .inventory import Inventory
 from .llm import (
     ATTRIBUTION_TIER,
+    DEFAULT_ATTRIBUTION_MODEL,
     Backend,
     Completion,
     LLMError,
@@ -93,7 +94,14 @@ class CoverageError(AttributionError):
 
 @dataclass(frozen=True)
 class Instrument:
-    """Every version that can change an attribution, folded into one address."""
+    """The versioned identity of one attribution measurement.
+
+    One thing deliberately stays out: the theme vocabulary fed forward through
+    a batch depends on batch order, so a reordered batch can produce a slightly
+    different slug for the same failure.  Folding it in would make the cache
+    miss on every reordering for no gain, because aggregate unifies aliases
+    downstream anyway — the counts are unaffected, only the slug's spelling.
+    """
 
     backend: str
     model: str | None
@@ -165,6 +173,24 @@ def build_instrument(
             ]
         ),
     )
+
+
+class EstimateBackend:
+    """Stands in for the real backend when previewing a run's cost.
+
+    ``--estimate`` must not construct a real backend — that would demand an API
+    key or a logged-in harness just to preview a cost — but the cache key
+    depends on which backend would run, so the preview needs something that
+    describes the default one.
+    """
+
+    name = "openai"
+    model = DEFAULT_ATTRIBUTION_MODEL
+    temperature = DEFAULT_ATTRIBUTION_TEMPERATURE
+    reasoning_effort: str | None = None
+
+    def complete(self, *args: object, **kwargs: object) -> Completion:
+        raise LLMError("the estimate backend never runs a request")
 
 
 class AttributionCache:
@@ -425,12 +451,16 @@ def attribute_batch(
             attributions.append(attribution)
 
     total = denominator if denominator is not None else len(distilled)
+    # The blinded sample is uncached by design, so a re-run that hit the cache
+    # for every trace would otherwise still cost five model calls to re-measure
+    # a number that cannot have changed.
+    fresh = len(attributions) - cache_hits
     run = AttributionRun(
         attributions=tuple(attributions),
         instrument=instrument,
         denominator=total,
         cache_hits=cache_hits,
-        health=_health(distilled, attributions, backend, health_sample),
+        health=_health(distilled, attributions, backend, health_sample if fresh else 0),
     )
     if run.coverage < min_coverage:
         raise CoverageError(

@@ -195,7 +195,10 @@ def resolve_edits(
 
 def _overlaps(left: ResolvedEdit, right: ResolvedEdit) -> bool:
     if left.is_insertion and right.is_insertion:
-        return left.start == right.start
+        # Two insertions at the same point are not in conflict — adding two
+        # sibling bullets under one instruction is an ordinary proposal. They
+        # are applied in a defined order, and G8 catches genuine duplicates.
+        return False
     if left.is_insertion:
         return right.start < left.start < right.end
     if right.is_insertion:

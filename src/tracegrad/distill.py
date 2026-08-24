@@ -268,9 +268,11 @@ def distill_trace(trace: Trace, config: DistillConfig | None = None) -> Distille
     redactor = _Redactor()
 
     def prepare(text: str, limit: int) -> str:
+        # Redact before reducing: truncating first can cut a secret in half and
+        # leave the surviving fragment unmatched by every rule.
         normalized = normalize_whitespace(text)
-        reduced = reduce_text(normalized, limit)
-        return redactor.redact(reduced) if settings.redact else reduced
+        redacted = redactor.redact(normalized) if settings.redact else normalized
+        return reduce_text(redacted, limit)
 
     distilled_input = prepare(trace.input, settings.max_input_chars)
     distilled_output = prepare(trace.output, settings.max_output_chars)

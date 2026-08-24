@@ -61,26 +61,56 @@ class Normalized:
 
 
 def N(text: str) -> Normalized:
-    """Normalize ``text`` (NFKC, folding, whitespace collapse) with an offset map."""
+    """Normalize ``text`` (NFKC, folding, whitespace collapse) with an offset map.
+
+    NFKC is applied to whole runs rather than per character: a combining
+    sequence like ``e`` + U+0301 only composes when its characters are seen
+    together, and decomposed-versus-precomposed is exactly the cosmetic
+    difference this module exists to fold.  Normalizing per character silently
+    leaves the two forms unequal, which shows up much later as a quote that
+    will not verify or an anchor that will not resolve.
+    """
 
     characters: list[str] = []
     offsets: list[int] = []
-    pending_space = False
+    pending_space: int | None = None
+    run: list[str] = []
+    run_offsets: list[int] = []
+
+    def flush_run() -> None:
+        if not run:
+            return
+        composed = unicodedata.normalize("NFKC", "".join(run))
+        # Map each produced character back to a source index. Composition only
+        # ever shortens a run, so pair them off in order and let any remainder
+        # share the last source index.
+        for position, produced in enumerate(composed):
+            characters.append(produced)
+            offsets.append(run_offsets[min(position, len(run_offsets) - 1)])
+        run.clear()
+        run_offsets.clear()
+
     for index, character in enumerate(text):
         if character.isspace():
-            pending_space = bool(characters)
+            flush_run()
+            if characters and pending_space is None:
+                # Remember where the whitespace run STARTED, so a normalized
+                # range covering the collapsed space maps back over the whole
+                # run rather than just its last character.
+                pending_space = index
             continue
-        folded = _FOLDING.get(character, character)
-        expanded = unicodedata.normalize("NFKC", folded)
-        if not expanded:
-            continue
-        if pending_space:
+        if pending_space is not None:
+            flush_run()
             characters.append(" ")
-            offsets.append(index)
-            pending_space = False
-        for produced in expanded:
-            characters.append(produced)
-            offsets.append(index)
+            # The collapsed space stands for the whitespace run itself, so it
+            # carries the index of that run's first character. Anything else
+            # makes original_span drop the space from the range it returns.
+            offsets.append(pending_space)
+            pending_space = None
+        folded = _FOLDING.get(character, character)
+        run.append(folded)
+        run_offsets.append(index)
+    flush_run()
     return Normalized("".join(characters), tuple(offsets), len(text))
 
 

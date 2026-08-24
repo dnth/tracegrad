@@ -182,7 +182,17 @@ def _block_spans(prompt: str) -> list[tuple[str, int, int]]:
         if _HEADING.match(line) and not paragraph:
             blocks.append(("heading", start, end))
             continue
-        if blocks and blocks[-1][0] == "bullet" and line.startswith((" ", "\t")):
+        # A continuation line only belongs to the bullet if nothing else has
+        # started since. Without the paragraph check the bullet's span grows
+        # past intervening prose, and the flushed paragraph then starts inside
+        # it — overlapping, out-of-order spans that break every offset downstream.
+        if (
+            not paragraph
+            and blocks
+            and blocks[-1][0] == "bullet"
+            and blocks[-1][2] == start - 1
+            and line.startswith((" ", "\t"))
+        ):
             kind, block_start, _ = blocks.pop()
             blocks.append((kind, block_start, end))
             continue

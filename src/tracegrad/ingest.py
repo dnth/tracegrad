@@ -168,10 +168,14 @@ def ingest_traces(
 
     if isinstance(traces, (str, Path)):
         candidates, dropped = _validate(read_trace_lines(traces))
-    elif all(isinstance(item, Trace) for item in traces):
-        candidates, dropped = list(traces), []  # type: ignore[arg-type]
     else:
-        candidates, dropped = _validate(traces)  # type: ignore[arg-type]
+        # Materialize once: `traces` may be a generator, and testing its
+        # contents before consuming it would leave nothing to ingest.
+        items = list(traces)
+        if all(isinstance(item, Trace) for item in items):
+            candidates, dropped = list(items), []  # type: ignore[arg-type]
+        else:
+            candidates, dropped = _validate(items)  # type: ignore[arg-type]
 
     kept: list[Trace] = []
     for trace in candidates:

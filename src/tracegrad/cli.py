@@ -26,12 +26,17 @@ from .apply import (
     revert,
     review_cards,
 )
-from .attribute import CoverageError, LLMError, attribute_batch, resolve_attribution_backend
+from .attribute import (
+    AttributionError,
+    LLMError,
+    attribute_batch,
+    resolve_attribution_backend,
+)
 from .config import ConfigError, load_config
 from .distill import DistillConfig, DistillError, distill_batch, render_manifest_prompt, store_batch
 from .gates import REJECTION_MEMORY_FILENAME, RejectionMemory, measure_tokens
 from .ingest import IngestError, ingest_traces
-from .inventory import build_inventory
+from .inventory import InventoryError, build_inventory
 from .pipeline import (
     RUN_LEDGER_FILENAME,
     PipelineError,
@@ -41,7 +46,8 @@ from .pipeline import (
     verdict_history,
 )
 from .schema import Report
-from .state import initialize, load_jsonl
+from .state import StateError, initialize, load_jsonl
+from .synthesize import SynthesisError
 from .trends import compare, convergence, format_trend, hysteresis
 
 DEFAULT_RUN_ID_PREFIX = "run"
@@ -207,10 +213,19 @@ def command_trends(args: argparse.Namespace, out: TextIO) -> int:
     return 0
 
 
-def _selected_indices(args: argparse.Namespace, proposal: Proposal, out: TextIO) -> list[int]:
+def _selected_indices(
+    args: argparse.Namespace, proposal: Proposal, out: TextIO
+) -> list[int] | None:
+    """The edits the human chose, or ``None`` when they were never asked.
+
+    The distinction matters: an empty selection is a decision the memory gate
+    should remember, and "nobody was asked" is not.  Conflating them lets one
+    piped invocation mark every proposed edit as human-rejected.
+    """
+
     if args.all:
         return list(range(len(proposal.edits)))
-    if args.accept:
+    if args.accept is not None:
         indices = []
         for token in args.accept.split(","):
             token = token.strip()
@@ -218,8 +233,12 @@ def _selected_indices(args: argparse.Namespace, proposal: Proposal, out: TextIO)
                 indices.append(int(token))
         return indices
     if not sys.stdin.isatty():
-        print("no selection given and stdin is not a terminal; nothing applied", file=out)
-        return []
+        print(
+            "no selection given and stdin is not a terminal; nothing applied.\n"
+            "  pass --accept <indices> or --all to decide non-interactively",
+            file=out,
+        )
+        return None
     selected: list[int] = []
     for card in review_cards(proposal):
         print(card.render(), file=out)
@@ -236,7 +255,9 @@ def command_apply(args: argparse.Namespace, out: TextIO) -> int:
         return 1
 
     if args.revert:
-        template = revert(args.project_root, run_id, base_directory=args.base_directory)
+        template = revert(
+            args.project_root, run_id, base_directory=args.base_directory, force=args.force
+        )
         print(f"reverted {template} from the snapshot taken for {run_id}", file=out)
         return 0
 
@@ -254,12 +275,15 @@ def command_apply(args: argparse.Namespace, out: TextIO) -> int:
         return 0
 
     selected = _selected_indices(args, proposal, out)
+    if selected is None:
+        return 1
     result = apply_proposal(
         args.project_root,
         proposal,
         selected,
         base_directory=args.base_directory,
     )
+    # Only a real decision is remembered.
     memory = RejectionMemory(
         initialize(args.project_root).ledgers / REJECTION_MEMORY_FILENAME
     )
@@ -394,6 +418,11 @@ def build_parser() -> argparse.ArgumentParser:
     apply_parser.add_argument("--accept", default=None, help="comma-separated edit indices")
     apply_parser.add_argument("--all", action="store_true", help="accept every proposed edit")
     apply_parser.add_argument("--revert", action="store_true", help="restore the snapshot")
+    apply_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="revert even though the template changed after it was applied",
+    )
     apply_parser.set_defaults(handler=command_apply)
 
     status_parser = subparsers.add_parser(
@@ -412,12 +441,15 @@ def main(argv: Sequence[str] | None = None, out: TextIO | None = None) -> int:
         return int(args.handler(args, stream))
     except (
         ApplyError,
+        AttributionError,
         ConfigError,
-        CoverageError,
         DistillError,
         IngestError,
+        InventoryError,
         LLMError,
         PipelineError,
+        StateError,
+        SynthesisError,
     ) as exc:
         print(f"tracegrad: {exc}", file=sys.stderr)
         return 1

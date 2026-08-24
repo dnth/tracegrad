@@ -187,8 +187,15 @@ class StateLock:
                 try:
                     descriptor = self._open()
                 except FileExistsError as race:
-                    # Another process won the same race; it holds a live lock.
                     raise StateLockError(f"lock already held: {self.path}") from race
+                # Two processes can see the same dead pid and both try to
+                # reclaim, so confirm the file on disk is still the one this
+                # process created before trusting the lock.
+                if not self._owns_file(descriptor):
+                    os.close(descriptor)
+                    raise StateLockError(
+                        f"lost the race to reclaim a stale lock: {self.path}"
+                    )
             else:
                 raise StateLockError(f"lock already held: {self.path}") from exc
         try:
@@ -204,6 +211,16 @@ class StateLock:
 
     def _open(self) -> int:
         return os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+
+    def _owns_file(self, descriptor: int) -> bool:
+        """Whether the path still names the file this descriptor refers to."""
+
+        try:
+            held = os.fstat(descriptor)
+            on_disk = os.stat(self.path)
+        except OSError:
+            return False
+        return (held.st_dev, held.st_ino) == (on_disk.st_dev, on_disk.st_ino)
 
     def release(self) -> None:
         descriptor = self._descriptor

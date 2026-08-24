@@ -32,6 +32,21 @@ def _normal_cdf(value: float) -> float:
     return 0.5 * (1.0 + math.erf(value / math.sqrt(2.0)))
 
 
+def _z_one_sided(power: float) -> float:
+    """The one-sided normal quantile for a target power."""
+
+    if abs(power - DEFAULT_POWER) < 1e-12:
+        return _Z_POWER_80
+    low, high = -10.0, 10.0
+    for _ in range(200):
+        middle = (low + high) / 2.0
+        if _normal_cdf(middle) < power:
+            low = middle
+        else:
+            high = middle
+    return (low + high) / 2.0
+
+
 def _z_two_sided(alpha: float) -> float:
     if abs(alpha - DEFAULT_ALPHA) < 1e-12:
         return _Z_TWO_SIDED_95
@@ -137,7 +152,7 @@ def detectable_effect(
         return 1.0
     baseline = before.rate if 0.0 < before.rate < 1.0 else 0.5
     variance = baseline * (1 - baseline) * (1 / before.denominator + 1 / after.denominator)
-    return min(1.0, (_z_two_sided(alpha) + _Z_POWER_80) * math.sqrt(variance))
+    return min(1.0, (_z_two_sided(alpha) + _z_one_sided(power)) * math.sqrt(variance))
 
 
 def evaluate_theme(
@@ -236,6 +251,12 @@ def compare(
     after_map = _cluster_map(after)
     before_size = max((p.denominator for p in before_map.values()), default=0)
     after_size = max((p.denominator for p in after_map.values()), default=0)
+    # A batch with no clusters still had traces in it. Falling back to the other
+    # batch's size keeps a brand-new theme comparable against a real zero rather
+    # than a 0/0 that short-circuits to no-signal — which is exactly the case
+    # the guardrail exists to catch: a theme that appears for the first time.
+    before_size = before_size or after_size
+    after_size = after_size or before_size
 
     results = []
     for theme in sorted(set(before_map) | set(after_map)):

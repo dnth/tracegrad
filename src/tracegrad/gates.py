@@ -139,15 +139,24 @@ def gate_edit_cap(
     cap: int = DEFAULT_EDIT_CAP,
     *,
     rank: Mapping[str, int] | None = None,
+    theme_map: Mapping[str, str] | None = None,
 ) -> tuple[tuple[ResolvedEdit, ...], tuple[Rejection, ...]]:
-    """G1 — keep at most ``cap`` edits, strongest evidence first."""
+    """G1 — keep at most ``cap`` edits, strongest evidence first.
+
+    ``rank`` is keyed by canonical theme, but a model proposes whatever slug it
+    likes, so the lookup goes through ``theme_map`` first.
+    """
 
     if len(resolved) <= cap:
         return tuple(resolved), ()
     weights = rank or {}
+    canonical = theme_map or {}
     ordered = sorted(
         resolved,
-        key=lambda item: (-weights.get(item.edit.covers_theme, 0), item.edit.instruction_id),
+        key=lambda item: (
+            -weights.get(canonical.get(item.edit.covers_theme, item.edit.covers_theme), 0),
+            item.edit.instruction_id,
+        ),
     )
     kept = ordered[:cap]
     dropped = tuple(
@@ -182,6 +191,30 @@ def _dropped_clauses(original: str, replacement: str, *, overlap: float = 0.5) -
     return dropped
 
 
+def shrinking_rewrites(resolved: Sequence[ResolvedEdit]) -> tuple[GateFlag, ...]:
+    """Flag rewrites that drop most of the instruction they replace.
+
+    Advisory, for the review card: the human sees "this rewrite removes most of
+    what it replaces" next to the diff, and decides.
+    """
+
+    flags: list[GateFlag] = []
+    for item in resolved:
+        if item.operation != "REWRITE" or item.anchor is None:
+            continue
+        original = _clauses(item.anchor.text)
+        dropped = _dropped_clauses(item.anchor.text, item.replacement)
+        if original and len(dropped) / len(original) > DROPPED_CLAUSE_TOLERANCE:
+            flags.append(
+                GateFlag(
+                    item.edit.instruction_id,
+                    "drops-most-of-the-instruction",
+                    f"{len(dropped)} of {len(original)} clauses have no counterpart",
+                )
+            )
+    return tuple(flags)
+
+
 def gate_accounting(
     prompt: str, resolved: Sequence[ResolvedEdit]
 ) -> tuple[tuple[ResolvedEdit, ...], tuple[Rejection, ...]]:
@@ -191,11 +224,12 @@ def gate_accounting(
     and the result is re-diffed against the original: a no-op, a DELETE that
     leaves its text in place, or an ADD that shrinks the prompt are all dropped.
 
-    A REWRITE gets a clause-level re-diff as well.  A rewrite that quietly drops
-    most of the instruction it replaces is a deletion wearing a rewrite's
-    label — it escapes the ``neverDelete`` guard and the budget accounting, and
-    a human skimming the diff can easily miss it.  It is dropped and named, so
-    the model must propose the DELETE it actually meant.
+    A rewrite that quietly drops most of the instruction it replaces is a
+    deletion wearing a rewrite's label, but it is not rejected here: tightening
+    a verbose instruction looks identical by token overlap, and that is the
+    commonest legitimate edit there is.  It is flagged for the review card
+    instead, and ``neverDelete`` is enforced against rewrites in G7 so protected
+    text still cannot be dropped by relabelling the operation.
     """
 
     kept: list[ResolvedEdit] = []
@@ -204,8 +238,13 @@ def gate_accounting(
     for item in resolved:
         after = apply_resolved(prompt, [item])
         after_tokens = measure_tokens(after)
+        # Duplicate instruction text is supported on purpose (inventory gives
+        # each copy its own ordinal), so a DELETE is checked by occurrence
+        # count, not by presence — otherwise de-duplicating is impossible.
         removed = normalized_text(item.anchor.text) if item.anchor else ""
-        still_present = bool(removed) and removed in normalized_text(after)
+        still_present = bool(removed) and normalized_text(after).count(
+            removed
+        ) >= normalized_text(prompt).count(removed)
         if after == prompt:
             rejected.append(Rejection(item.edit, REASON_ACCOUNTING, "edit is a no-op"))
             continue
@@ -215,19 +254,6 @@ def gate_accounting(
         if item.operation == "ADD" and after_tokens < before_tokens:
             rejected.append(Rejection(item.edit, REASON_ACCOUNTING, "ADD removed content"))
             continue
-        if item.operation == "REWRITE" and item.anchor is not None:
-            original_clauses = _clauses(item.anchor.text)
-            dropped = _dropped_clauses(item.anchor.text, item.replacement)
-            if original_clauses and len(dropped) / len(original_clauses) > DROPPED_CLAUSE_TOLERANCE:
-                rejected.append(
-                    Rejection(
-                        item.edit,
-                        REASON_ACCOUNTING,
-                        f"REWRITE drops {len(dropped)} of {len(original_clauses)} clauses; "
-                        "propose a DELETE instead",
-                    )
-                )
-                continue
         kept.append(item)
     return tuple(kept), tuple(rejected)
 
@@ -392,7 +418,11 @@ def gate_budget(
     if ceiling is None:
         return tuple(kept), (), before, measure_tokens(apply_resolved(prompt, kept))
 
-    limit = min(ceiling, before) if before >= ceiling else ceiling
+    # At or above the ceiling the rule is zero-sum, not zero-additions: the set
+    # may not grow. An addition paired with a deletion that pays for it is
+    # exactly what the budget is meant to encourage, so the bar is the current
+    # size, never a ceiling the prompt has already passed.
+    limit = max(ceiling, before)
     while kept:
         after = measure_tokens(apply_resolved(prompt, kept))
         if after <= limit:
@@ -463,15 +493,23 @@ def gate_memory(
     resolved: Sequence[ResolvedEdit],
     memory: RejectionMemory | None,
     support: Mapping[str, int] | None = None,
+    theme_map: Mapping[str, str] | None = None,
 ) -> tuple[tuple[ResolvedEdit, ...], tuple[Rejection, ...]]:
-    """G6 — drop edits a human already rejected, unless new sessions back them."""
+    """G6 — drop edits a human already rejected, unless new sessions back them.
+
+    ``support`` is keyed by canonical theme; the edit names whatever slug the
+    model used, so it is canonicalized before the lookup.  Without that, an
+    alias reads as zero support and blocks a re-proposal forever.
+    """
 
     if memory is None:
         return tuple(resolved), ()
+    canonical = theme_map or {}
     kept: list[ResolvedEdit] = []
     rejected: list[Rejection] = []
     for item in resolved:
-        distinct = (support or {}).get(item.edit.covers_theme, 0)
+        theme = canonical.get(item.edit.covers_theme, item.edit.covers_theme)
+        distinct = (support or {}).get(theme, 0)
         if memory.blocks(item.edit, distinct_sessions=distinct):
             rejected.append(
                 Rejection(
@@ -501,9 +539,18 @@ def gate_variable_spans(
         if anchor is not None and not anchor.editable:
             rejected.append(Rejection(item.edit, REASON_VARIABLE_SPAN, anchor.origin))
             continue
-        if anchor is not None and item.operation == "DELETE":
+        if anchor is not None and item.operation in {"DELETE", "REWRITE"}:
+            # A REWRITE that drops protected text is a delete by another name,
+            # so neverDelete is checked against what actually survives.
             protected = next(
-                (pattern for pattern in patterns if pattern and pattern in anchor.text), None
+                (
+                    pattern
+                    for pattern in patterns
+                    if pattern
+                    and pattern in anchor.text
+                    and pattern not in item.replacement
+                ),
+                None,
             )
             if protected:
                 rejected.append(
@@ -563,13 +610,18 @@ def run_gates(
     working.kept = list(kept)
     working.rejected.extend(rejected)
 
-    kept, reclassified = gate_reclassify(working.kept)
-    working.kept = list(kept)
-    working.reclassified.extend(reclassified)
-
+    # Accounting runs first, judging the operation the model declared.  Running
+    # it after reclassification would apply the ADD-only "did not shrink" check
+    # to a REWRITE that legitimately tightens an instruction while adding a
+    # clause — the most common real edit shape there is.
     kept, rejected = gate_accounting(prompt, working.kept)
     working.kept = list(kept)
     working.rejected.extend(rejected)
+    working.flags.extend(shrinking_rewrites(working.kept))
+
+    kept, reclassified = gate_reclassify(working.kept)
+    working.kept = list(kept)
+    working.reclassified.extend(reclassified)
 
     kept, rejected, flags = gate_evidence(
         working.kept, attributions, distilled or {}, aggregation
@@ -578,7 +630,8 @@ def run_gates(
     working.rejected.extend(rejected)
     working.flags.extend(flags)
 
-    kept, rejected = gate_memory(working.kept, memory, support)
+    theme_map = dict(aggregation.theme_map) if aggregation else {}
+    kept, rejected = gate_memory(working.kept, memory, support, theme_map)
     working.kept = list(kept)
     working.rejected.extend(rejected)
 
@@ -589,7 +642,9 @@ def run_gates(
     rank = {
         theme.theme: theme.numerator for theme in (aggregation.themes if aggregation else ())
     }
-    kept, rejected = gate_edit_cap(working.kept, settings.edit_cap, rank=rank)
+    kept, rejected = gate_edit_cap(
+        working.kept, settings.edit_cap, rank=rank, theme_map=theme_map
+    )
     working.kept = list(kept)
     working.rejected.extend(rejected)
 

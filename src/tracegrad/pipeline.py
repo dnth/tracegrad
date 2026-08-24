@@ -30,8 +30,11 @@ from .aggregate import (
 from .apply import Proposal, build_proposal, current_baseline, save_proposal
 from .attribute import (
     ATTRIBUTION_TIER,
+    AttributionCache,
     AttributionRun,
+    EstimateBackend,
     attribute_batch,
+    build_instrument,
     resolve_attribution_backend,
 )
 from .config import TracegradConfig, load_config
@@ -130,19 +133,31 @@ def estimate_run(
     *,
     project_root: str | Path = ".",
     base_directory: str | Path = ".",
+    backend_for_estimate: object = None,
 ) -> Estimate:
-    """Preview a run's cost without contacting a model."""
+    """Preview a run's cost without contacting a model.
+
+    The cached count assumes the default attribution backend unless
+    ``backend_for_estimate`` names another, because a different backend is a
+    different instrument and therefore a different cache.
+    """
 
     manifest = load_manifest(manifest_path)
     rendered = render_manifest_prompt(manifest, base_directory)
     ingested = ingest_traces(traces_path, manifest)
-    distilled = distill_batch(ingested.traces)
+    distill_config = DistillConfig()
+    distilled = distill_batch(ingested.traces, distill_config)
     layout = initialize(project_root)
-    cache_root = layout.root / "cache" / "attribution"
-    cached = 0
-    if cache_root.exists():
-        known = {path.stem for path in cache_root.glob("*/*.json")}
-        cached = sum(1 for item in distilled if item.content_address.split(":")[-1] in known)
+
+    # The cache is keyed by instrument crossed with the trace, so the estimate
+    # has to build the same instrument the run would — comparing bare content
+    # addresses reports every batch as uncached, telling the user to re-pay for
+    # work already done.
+    inventory = build_inventory(rendered)
+    backend = backend_for_estimate or EstimateBackend()
+    instrument = build_instrument(backend, inventory, distill_config.config_hash)
+    cache = AttributionCache(layout)
+    cached = sum(1 for item in distilled if cache.get(instrument.cache_key(item)) is not None)
     return Estimate(
         traces=len(ingested.traces),
         attribution_calls=max(0, len(ingested.traces) - cached),
@@ -296,7 +311,19 @@ def run_pipeline(
             clusters=list(aggregation.clusters),
             instrument_fingerprint=attribution.instrument.measurement_fingerprint,
         )
-        atomic_write_json(layout.reports / f"{run_id}.json", report.model_dump(mode="json"))
+        # Re-running the same batch measures nothing new, and writing the report
+        # again would leave `trends` comparing a run against itself.
+        measured_something_new = previous_report is None or (
+            previous_report.clusters != report.clusters
+            or previous_report.instrument_fingerprint != report.instrument_fingerprint
+        )
+        if measured_something_new:
+            atomic_write_json(layout.reports / f"{run_id}.json", report.model_dump(mode="json"))
+        else:
+            warnings.append(
+                "this batch measured the same counts as the previous run; "
+                "no new report was written"
+            )
 
         trends: TrendReport | None = None
         if previous_report is not None:

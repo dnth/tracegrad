@@ -236,6 +236,13 @@ class GapState:
         return self.status == GAP_GRADUATED
 
     def can_graduate(self, required: int = GRADUATION_DISTINCT_SOURCES) -> bool:
+        """Whether this theme may become a proposed addition.
+
+        A retired theme never can, whatever its history says: retirement is the
+        decision that it should stop being proposed, and the cumulative source
+        count would otherwise clear the bar again the moment it was set.
+        """
+
         return self.status != GAP_RETIRED and self.distinct_sources >= required
 
 
@@ -345,7 +352,8 @@ class GapLedger:
         return tuple(
             gap
             for gap in self.state().values()
-            if gap.is_graduated or gap.can_graduate(self.required_sources)
+            if gap.status != GAP_RETIRED
+            and (gap.is_graduated or gap.can_graduate(self.required_sources))
         )
 
 
@@ -384,7 +392,15 @@ class ThemeHistory:
             )
 
     def sources(self) -> dict[str, set[str]]:
-        """Per theme, the distinct sources that have shown it."""
+        """Per theme, the distinct sessions that have shown it.
+
+        Only a declared session counts.  Falling back to the run id would make
+        every re-run look like new evidence — run ids are distinct by
+        construction — so a rejected edit would clear the bar on the next run
+        with exactly the same traces behind it.  Without ``--session-id`` the
+        bar is simply never cleared, which is the safe direction: it keeps a
+        human's rejection standing.
+        """
 
         seen: dict[str, set[str]] = defaultdict(set)
         for record in load_jsonl(self.path):
@@ -392,10 +408,8 @@ class ThemeHistory:
             if not isinstance(theme, str) or not theme:
                 continue
             session_id = record.get("session_id")
-            run_id = record.get("run_id")
-            source = session_id if isinstance(session_id, str) and session_id else run_id
-            if isinstance(source, str) and source:
-                seen[theme].add(source)
+            if isinstance(session_id, str) and session_id:
+                seen[theme].add(session_id)
         return dict(seen)
 
     def distinct_sources(self) -> dict[str, int]:

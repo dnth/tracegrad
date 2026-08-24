@@ -115,9 +115,10 @@ def build_proposal(
         record = records.get(result.trace_id or "")
         for entry in (*result.violations, *result.harmful):
             theme = canonical.get(entry.theme_slug, entry.theme_slug)
-            if record is not None and entry.quote not in record.quotable(
-                entry.quote_source.value
-            ):
+            # A missing distilled record means the quote CANNOT be verified, so
+            # it is not evidence. The gates already treat it that way; the card
+            # a human actually reads must not be the one place that trusts it.
+            if record is None or entry.quote not in record.quotable(entry.quote_source.value):
                 continue
             evidence_by_theme.setdefault(theme, []).append(
                 EditEvidence(
@@ -367,8 +368,21 @@ def apply_proposal(
     )
 
 
-def revert(project_root: str | Path, run_id: str, *, base_directory: str | Path = ".") -> Path:
-    """Restore the pre-apply snapshot for one run and record the revert."""
+def revert(
+    project_root: str | Path,
+    run_id: str,
+    *,
+    base_directory: str | Path = ".",
+    force: bool = False,
+) -> Path:
+    """Restore the pre-apply snapshot for one run and record the revert.
+
+    Reverting overwrites the template, so it is as careful as applying: if the
+    file no longer hashes to what the apply produced, someone has edited it
+    since, and restoring the snapshot would silently destroy that work.  The
+    current file is snapshotted first either way, so a revert is itself
+    reversible.
+    """
 
     layout = initialize(project_root)
     records = [
@@ -384,6 +398,20 @@ def revert(project_root: str | Path, run_id: str, *, base_directory: str | Path 
         template = contained_path(base_directory, str(record["template_file"]))
     except PathContainmentError as exc:
         raise ApplyError(f"refusing to write outside the project: {exc}") from exc
+
+    try:
+        current = template.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ApplyError(f"could not read template {template}: {exc}") from exc
+    applied_hash = str(record.get("applied_prompt_hash", ""))
+    if applied_hash and text_hash(current) != applied_hash and not force:
+        raise StaleProposalError(
+            f"{template} has changed since run {run_id} was applied; reverting would "
+            "discard those edits — re-check the file, then revert with force"
+        )
+    # Snapshot what is there now, so the revert can itself be undone.
+    snapshot_template(project_root, validate_run_id(run_id) + "-prerevert", template)
+
     try:
         atomic_write(template, snapshot.read_text(encoding="utf-8"))
     except OSError as exc:
@@ -398,7 +426,29 @@ def revert(project_root: str | Path, run_id: str, *, base_directory: str | Path 
         },
     )
     _restore_reverted_gaps(layout, record, run_id)
+    _remember_reverted_edits(layout, record, run_id)
     return template
+
+
+def _remember_reverted_edits(
+    layout: StateLayout, record: Mapping[str, object], run_id: str
+) -> None:
+    """Record the reverted edits so G6 does not re-propose them unopposed.
+
+    A revert is a stronger signal than a rejection — the edit was accepted,
+    shipped, and taken back — so the memory gate has to see it.
+    """
+
+    from .gates import REJECTION_MEMORY_FILENAME, RejectionMemory
+
+    memory = RejectionMemory(layout.ledgers / REJECTION_MEMORY_FILENAME)
+    for raw in record.get("accepted", []) or []:  # type: ignore[union-attr]
+        if not isinstance(raw, dict):
+            continue
+        try:
+            memory.record_revert(Edit.model_validate(raw), run_id=run_id)
+        except ValidationError:
+            continue
 
 
 def _restore_reverted_gaps(

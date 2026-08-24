@@ -28,6 +28,7 @@ from tracegrad.gates import (
     measure_tokens,
     negation_window_flag,
     run_gates,
+    shrinking_rewrites,
     verify_quote,
 )
 from tracegrad.inventory import Instruction, build_inventory
@@ -626,22 +627,24 @@ def test_run_gates_populates_token_counts_with_an_empty_proposal_set() -> None:
 # ------------------------------------------------------- G2, clause accounting
 
 
-def test_a_rewrite_that_drops_most_of_an_instruction_is_rejected() -> None:
-    # A rewrite that quietly deletes is a DELETE wearing a rewrite's label: it
-    # would slip past neverDelete and the budget accounting.
+def test_a_rewrite_that_drops_most_of_an_instruction_is_flagged_not_dropped() -> None:
+    # Tightening a verbose instruction and silently deleting most of it look
+    # identical by token overlap, and tightening is the commonest real edit —
+    # so this is advisory for the review card, not a rejection.
     prompt = "- Always cite the source, name the article, and give the section.\n"
     inventory = build_inventory(prompt)
     edit = _rewrite(inventory.instructions[0], "Always cite the source.")
     resolution = resolve_edits(inventory, [edit])
 
     kept, rejected = gate_accounting(prompt, resolution.resolved)
+    flags = shrinking_rewrites(kept)
 
-    assert kept == ()
-    assert rejected[0].reason == REASON_ACCOUNTING
-    assert "propose a DELETE instead" in rejected[0].detail
+    assert len(kept) == 1
+    assert rejected == ()
+    assert [flag.flag for flag in flags] == ["drops-most-of-the-instruction"]
 
 
-def test_a_rewrite_that_rewords_without_dropping_clauses_is_kept() -> None:
+def test_a_rewrite_that_rewords_without_dropping_clauses_is_not_flagged() -> None:
     prompt = "- Always cite the source, name the article, and give the section.\n"
     inventory = build_inventory(prompt)
     edit = _rewrite(
@@ -651,6 +654,32 @@ def test_a_rewrite_that_rewords_without_dropping_clauses_is_kept() -> None:
     resolution = resolve_edits(inventory, [edit])
 
     kept, rejected = gate_accounting(prompt, resolution.resolved)
+
+    assert len(kept) == 1
+    assert rejected == ()
+    assert shrinking_rewrites(kept) == ()
+
+
+def test_never_delete_survives_a_rewrite_that_drops_the_protected_text() -> None:
+    # Relabelling a delete as a rewrite must not get past neverDelete.
+    prompt = "- You are Northwind's support agent.\n"
+    inventory = build_inventory(prompt)
+    edit = _rewrite(inventory.instructions[0], "Be helpful and brief.")
+    resolution = resolve_edits(inventory, [edit])
+
+    kept, rejected = gate_variable_spans(resolution.resolved, inventory, ("Northwind",))
+
+    assert kept == ()
+    assert "neverDelete" in rejected[0].detail
+
+
+def test_a_rewrite_that_keeps_the_protected_text_is_allowed() -> None:
+    prompt = "- You are Northwind's support agent.\n"
+    inventory = build_inventory(prompt)
+    edit = _rewrite(inventory.instructions[0], "You are Northwind's support agent. Be brief.")
+    resolution = resolve_edits(inventory, [edit])
+
+    kept, rejected = gate_variable_spans(resolution.resolved, inventory, ("Northwind",))
 
     assert len(kept) == 1
     assert rejected == ()

@@ -271,15 +271,17 @@ def test_theme_history_counts_distinct_sessions_not_traces(tmp_path: Path) -> No
     assert history.distinct_sources() == {"missing-citation": 2}
 
 
-def test_theme_history_falls_back_to_runs_without_a_session_id(tmp_path: Path) -> None:
+def test_a_run_without_a_session_id_is_not_counted_as_new_evidence(tmp_path: Path) -> None:
+    # Run ids are distinct by construction, so counting them would make every
+    # re-run look like independent evidence and clear the re-proposal bar with
+    # exactly the same traces behind it.
     history = ThemeHistory(tmp_path / "themes.jsonl")
     themes = (ThemeStat(theme="jargon-tone", numerator=3, denominator=20),)
 
     history.record(themes, run_id="run-1")
-    history.record(themes, run_id="run-1")
     history.record(themes, run_id="run-2")
 
-    assert history.distinct_sources() == {"jargon-tone": 2}
+    assert history.distinct_sources() == {}
 
 
 def test_theme_history_ignores_themes_with_no_observations(tmp_path: Path) -> None:
