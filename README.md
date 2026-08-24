@@ -130,6 +130,33 @@ see *What you need* above.
 `format`; it is declared, never guessed. `judge_fingerprint` is how tracegrad
 tells you that trends across a judge change are not comparable.
 
+### Using a coding-agent harness instead of an API key
+
+Attribution defaults to the `openai` provider, so out of the box tracegrad wants
+an API key. If you are already logged into `claude`, point both stages at it and
+no key is involved:
+
+```toml
+[harness_presets.attribution]
+provider = "claude"
+
+[harness_presets.synthesis]
+provider = "claude"
+```
+
+tracegrad shells out to the CLI in a deliberately isolated configuration — no
+tools, no MCP servers, no inherited settings — so an analysis run cannot touch
+the repository it is analysing.
+
+Two things to know before pointing a large batch at a harness. Attribution is
+one call per trace, and each isolated CLI call re-creates the agent's own
+baseline system prompt as cache — tens of thousands of tokens you pay for per
+call, whatever the trace costs. A batch that is cheap through an API key can be
+expensive through a harness. And `--jobs` fixes wall-clock, not spend.
+
+For a large batch, an OpenAI-compatible key for attribution and the harness for
+synthesis is usually the cheaper mix — that is why it is the default.
+
 ### Project configuration
 
 tracegrad reads an optional TOML file named `.tracegradrc` from the project root.
