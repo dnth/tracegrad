@@ -6,3 +6,4 @@ dist/
 .tracegrad/
 uv.lock
 .codegraph/
+.omc/
