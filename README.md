@@ -11,9 +11,9 @@ proposes a small set of edits to your prompt template — each one backed by ver
 quotes from real traces, capped at five per run, and gated by you. It never writes
 without your approval.
 
-> **Status: v0.1.0, not yet published to PyPI.** The pipeline below runs end to
-> end against the batch in [`example/`](example/). See the
-> [implementation plan](../../issues/1) for what is deferred past v0.1.0
+> **Status: v0.1.0, not published to PyPI.** Install from source until it is.
+> The pipeline below runs end to end against the batch in [`example/`](example/).
+> See the [implementation plan](../../issues/1) for what is deferred past v0.1.0
 > (A/B mode, replay hook, the `jinja-basic` template engine).
 
 ## Why
@@ -71,7 +71,7 @@ the batches are not comparable rather than differencing them anyway.
 ## Usage
 
 ```sh
-uv tool install tracegrad
+uv tool install git+https://github.com/dnth/tracegrad
 
 cd my-app-evals
 tracegrad init
