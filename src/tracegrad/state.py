@@ -155,15 +155,6 @@ class StateLock:
         self.release()
 
 
-FileLock = StateLock
-
-
-def acquire_lock(path: str | Path) -> StateLock:
-    """Return a lock ready to use as a context manager."""
-
-    return StateLock(path)
-
-
 def atomic_write(path: str | Path, content: bytes | bytearray | str) -> None:
     """Replace ``path`` with fully fsynced content, never a partial file."""
 
@@ -277,6 +268,3 @@ def load_resume_state(
     if not isinstance(value, dict):
         raise StateError(f"resume state is not a JSON object: {target}")
     return value
-
-
-read_resume_state = load_resume_state

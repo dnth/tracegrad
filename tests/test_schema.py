@@ -42,6 +42,17 @@ def test_trace_round_trips_with_nested_judge_and_meta() -> None:
     assert restored.meta.model == "test-model"
 
 
+def test_trace_rejects_out_of_range_judge_score() -> None:
+    with pytest.raises(ValidationError):
+        Trace(
+            trace_id="trace-1",
+            input="hello",
+            output="world",
+            judge={"score": 1.5, "rationale": "too generous"},
+            prompt_hash="sha256:abc",
+        )
+
+
 def test_manifest_rejects_unsupported_engine(tmp_path: Path) -> None:
     with pytest.raises(ValidationError):
         Manifest(

@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from tracegrad.config import ConfigError, load_config, load_rc
+from tracegrad.config import ConfigError, load_config
 
 
 def test_defaults_apply_when_rc_is_absent(tmp_path: Path) -> None:
@@ -13,7 +13,7 @@ def test_defaults_apply_when_rc_is_absent(tmp_path: Path) -> None:
     assert config.minCoverage == 0.8
     assert config.convergenceRuns == 2
     assert config.harness_presets["attribution"].provider == "openai"
-    assert config.harness["synthesis"].provider == "claude"
+    assert config.harness_presets["synthesis"].provider == "claude"
 
 
 def test_each_rc_field_parses(tmp_path: Path) -> None:
@@ -36,7 +36,7 @@ model = "gpt-test"
         encoding="utf-8",
     )
 
-    config = load_rc(tmp_path)
+    config = load_config(tmp_path)
 
     assert config.neverDelete == ["keep/**", "README.md"]
     assert config.minEffect == 0.12

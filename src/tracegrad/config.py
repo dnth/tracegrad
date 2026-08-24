@@ -7,7 +7,6 @@ names consumed by the CLI contract.
 
 from __future__ import annotations
 
-import copy
 import tomllib
 from pathlib import Path
 from typing import TypeAlias
@@ -54,28 +53,10 @@ class TracegradConfig(BaseModel):
         }
     )
 
-    @property
-    def harness(self) -> dict[str, HarnessPreset]:
-        """Compatibility accessor for the rc's ``harness`` wording."""
-
-        return self.harness_presets
-
 
 def _resolve_rc_path(path: str | Path) -> Path:
     candidate = Path(path)
     return candidate / DEFAULT_RC_FILENAME if candidate.is_dir() else candidate
-
-
-def _normalize_harness_key(data: dict[str, object]) -> dict[str, object]:
-    """Accept the documented name and the concise ``harness`` spelling."""
-
-    normalized = copy.deepcopy(data)
-    if "harness" in normalized and "harness_presets" not in normalized:
-        harness = normalized.pop("harness")
-        if isinstance(harness, dict) and set(harness) == {"presets"}:
-            harness = harness["presets"]
-        normalized["harness_presets"] = harness
-    return normalized
 
 
 def load_config(path: str | Path = ".") -> TracegradConfig:
@@ -98,15 +79,6 @@ def load_config(path: str | Path = ".") -> TracegradConfig:
         raise ConfigError(f"could not parse tracegrad config {rc_path}: {exc}") from exc
 
     try:
-        return TracegradConfig.model_validate(_normalize_harness_key(raw))
+        return TracegradConfig.model_validate(raw)
     except ValidationError as exc:
         raise ConfigError(f"invalid tracegrad config {rc_path}: {exc}") from exc
-
-
-def load_rc(root: str | Path = ".") -> TracegradConfig:
-    """Load ``.tracegradrc`` from a project root."""
-
-    return load_config(root)
-
-
-Config = TracegradConfig
