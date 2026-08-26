@@ -29,7 +29,7 @@ from tracegrad.integrations.kitaru.backend import (
     is_tool_history_miss,
     mixed_agent_version_message,
 )
-from tracegrad.integrations.kitaru.client import FETCH_JOBS
+from tracegrad.integrations.kitaru.client import FETCH_JOBS, worker_covers_agent_version
 from tracegrad.integrations.kitaru.errors import KitaruVerifyError
 from tracegrad.integrations.kitaru.policy import (
     RECORDED_HISTORY_POLICY,
@@ -406,6 +406,54 @@ def test_mixed_agent_version_message_includes_a_breakdown() -> None:
     message = mixed_agent_version_message({"av-1": 12, "av-2": 3})
     assert "av-1: 12 session(s)" in message
     assert "av-2: 3 session(s)" in message
+
+
+def test_stale_workers_do_not_cover_an_agent_version() -> None:
+    claim = SimpleNamespace(kind="agent", agent_version_id="av1")
+    stale = SimpleNamespace(live=False, scope=SimpleNamespace(claims=[claim]))
+    live = SimpleNamespace(live=True, scope=SimpleNamespace(claims=[claim]))
+    assert worker_covers_agent_version(stale, "av1") is False
+    assert worker_covers_agent_version(live, "av1") is True
+
+
+def test_preflight_wraps_list_live_workers_errors() -> None:
+    class Gateway:
+        async def server_info(self) -> str:
+            return "ok"
+
+        async def get_cohort_version(self, cohort_version_id: str) -> object:
+            return SimpleNamespace(id=cohort_version_id)
+
+        async def get_agent_version(self, agent_version_id: str) -> object:
+            return SimpleNamespace(id=agent_version_id)
+
+        async def list_live_workers(self) -> list[object]:
+            raise RuntimeError("connection reset")
+
+    backend = KitaruVerificationBackend(gateway=Gateway())
+    with pytest.raises(KitaruVerifyError, match="could not list workers"):
+        backend.preflight(_request(agent_version_counts={"av1": 2}))
+
+
+def test_preflight_ignores_stale_workers_when_checking_coverage() -> None:
+    claim = SimpleNamespace(kind="agent", agent_version_id="av1")
+
+    class Gateway:
+        async def server_info(self) -> str:
+            return "ok"
+
+        async def get_cohort_version(self, cohort_version_id: str) -> object:
+            return SimpleNamespace(id=cohort_version_id)
+
+        async def get_agent_version(self, agent_version_id: str) -> object:
+            return SimpleNamespace(id=agent_version_id)
+
+        async def list_live_workers(self) -> list[object]:
+            return [SimpleNamespace(live=False, scope=SimpleNamespace(claims=[claim]))]
+
+    backend = KitaruVerificationBackend(gateway=Gateway())
+    with pytest.raises(KitaruVerifyError, match="no live worker is polling"):
+        backend.preflight(_request(agent_version_counts={"av1": 2}))
 
 
 def test_classify_fail_to_pass_is_improved() -> None:

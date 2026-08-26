@@ -297,7 +297,14 @@ class KitaruVerificationBackend:
         only = next(iter(distinct))
         if only != request.agent_version_id:
             raise KitaruVerifyError(mixed_agent_version_message(counts))
-        workers = await gateway.list_live_workers()
+        try:
+            workers = await gateway.list_live_workers()
+        except Exception as exc:
+            raise KitaruVerifyError(
+                "could not list workers from the kitaru server. Start the "
+                "server and run `kitaru login` first; tracegrad does not host "
+                "workers (ADR 0001)."
+            ) from exc
         if not any(worker_covers_agent_version(worker, request.agent_version_id) for worker in workers):
             raise KitaruVerifyError(
                 "no live worker is polling for agent version "

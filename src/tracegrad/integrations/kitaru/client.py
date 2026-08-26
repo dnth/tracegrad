@@ -222,8 +222,9 @@ class KitaruGateway:
     async def list_live_workers(self) -> list[Any]:
         from kitaru.api_models.v1.worker import WorkerListParams
 
-        params = WorkerListParams(include_stale=False)
-        return [item async for item in self._client.workers.iter(params)]
+        # kitaru 0.22 WorkerListParams is FilterableListParams (extra='forbid').
+        # include_stale is not a field; worker_covers_agent_version skips live=False.
+        return [item async for item in self._client.workers.iter(WorkerListParams())]
 
     async def create_experiment(self, request: Any) -> Any:
         return await self._client.experiments.create(request)
