@@ -70,7 +70,9 @@ def test_estimate_previews_cost_without_a_model(tmp_path: Path) -> None:
     assert "attribution call" in output
 
 
-def test_run_reports_themes_drops_and_proposals(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_run_reports_themes_drops_and_proposals(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     project = _example(tmp_path)
     from test_e2e import _attribution_response, _synthesis_response  # noqa: PLC0415
 
@@ -263,7 +265,6 @@ def test_cli_commands_load_rc_from_project_root_not_base_directory(
     assert "converged: 1 consecutive runs proposed nothing" in status_output
 
 
-
 def _saved_proposal(project: Path) -> None:
     template = project / "prompt.md"
     template.write_text(PROMPT, encoding="utf-8")
@@ -368,7 +369,9 @@ def test_apply_without_a_proposal_fails_cleanly(tmp_path: Path) -> None:
     assert "no proposal" in output
 
 
-def test_errors_are_reported_without_a_traceback(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_errors_are_reported_without_a_traceback(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     code, _ = _run(
         "run",
         "--traces",
