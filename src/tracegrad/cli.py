@@ -155,7 +155,7 @@ def command_run(args: argparse.Namespace, out: TextIO) -> int:
 
 
 def command_attribute(args: argparse.Namespace, out: TextIO) -> int:
-    config = load_config(args.base_directory)
+    config = load_config(args.project_root)
     manifest = load_manifest(args.manifest)
     rendered = render_manifest_prompt(manifest, args.base_directory)
     inventory = build_inventory(rendered)
@@ -191,7 +191,7 @@ def command_propose(args: argparse.Namespace, out: TextIO) -> int:
 
 
 def command_trends(args: argparse.Namespace, out: TextIO) -> int:
-    config = load_config(args.base_directory)
+    config = load_config(args.project_root)
     reports = _reports(args.project_root)
     if len(reports) < 2:
         print("need at least two runs before trends mean anything", file=out)
@@ -304,7 +304,7 @@ def command_apply(args: argparse.Namespace, out: TextIO) -> int:
 
 def command_status(args: argparse.Namespace, out: TextIO) -> int:
     layout = initialize(args.project_root)
-    config = load_config(args.base_directory)
+    config = load_config(args.project_root)
     history = load_jsonl(layout.ledgers / RUN_LEDGER_FILENAME)
     print(f"state: {layout.root}", file=out)
     print(f"runs recorded: {len(history)}", file=out)

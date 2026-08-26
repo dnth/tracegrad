@@ -197,7 +197,7 @@ def run_pipeline(
 ) -> RunResult:
     """Execute one full analysis run and persist its proposal and report."""
 
-    settings = config or load_config(base_directory)
+    settings = config or load_config(project_root)
     layout = initialize(project_root)
     warnings: list[str] = []
 
