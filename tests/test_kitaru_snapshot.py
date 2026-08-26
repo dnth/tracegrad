@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 
 from tracegrad.canonical import text_hash
 from tracegrad.integrations.kitaru.accounting import format_source_table
@@ -318,6 +321,92 @@ def test_prepare_refresh_fetches_even_when_latest_exists(tmp_path) -> None:
     assert pointer is not None
     assert pointer["cohort_version_id"] == "cv-new"
     assert pointer["snapshot_id"] == snapshot_key("cv-new", "quality")
+
+
+def test_refresh_fingerprint_conflict_does_not_clobber_last_good_snapshot(tmp_path) -> None:
+    layout = initialize(tmp_path)
+    write_snapshot(
+        layout,
+        fingerprint=_sample_fingerprint(),
+        meta=_sample_meta(),
+        mapped=_sample_mapped(),
+        dropped=[],
+    )
+    previous_batch = (
+        layout.sources / "kitaru" / "cv" / "quality" / "batch.jsonl"
+    ).read_text(encoding="utf-8")
+
+    session = SimpleNamespace(id="0f3a0000-0000-4000-8000-00000000c19d", number=12)
+    node = SimpleNamespace(
+        index=0,
+        parent_index=None,
+        secondary_parent_indexes=[],
+        node_type="llm_call",
+        inputs={"input": "q", "system": "prompt"},
+        outputs={"output": "a"},
+        input_text_selector="/input",
+        output_text_selector="/output",
+        system_prompt_selector="/system",
+        model="gpt-4.1",
+    )
+    evaluation = SimpleNamespace(
+        id="e1",
+        name="quality",
+        score=0.2,
+        explanation="needs a citation in the answer now",
+        passed=False,
+        value=None,
+        data_type="float",
+        evaluator_name="quality",
+        evaluator_version=9,
+        evaluator_version_id="ev-9",
+    )
+
+    class ConflictGateway:
+        async def resolve_cohort(self, name: str, version: str | None = None) -> CohortResolution:
+            return CohortResolution(
+                cohort_id="c",
+                cohort_name=name,
+                cohort_version_id="cv-new",
+                display_version="week-35",
+                version_number=2,
+                agent_id="a",
+                session_count=1,
+            )
+
+        async def list_sessions(self, cohort_version_id: str) -> list[object]:
+            return [session]
+
+        async def fetch_records(self, sessions: list[object]) -> list[object]:
+            return [(sessions[0], [node], [evaluation])]
+
+        async def evaluator_id(self, name: str) -> str:
+            return "eid-new"
+
+        async def close(self) -> None:
+            return None
+
+    with pytest.raises(Exception, match="judge-fingerprint-conflict"):
+        prepare_kitaru_source(
+            project_root=tmp_path,
+            manifest=_manifest("quality@3"),
+            cohort_name="support-production",
+            evaluation_name="quality",
+            refresh=True,
+            gateway=ConflictGateway(),
+        )
+
+    pointer = load_latest_pointer(
+        layout, cohort_name="support-production", evaluation_name="quality"
+    )
+    assert pointer is not None
+    assert pointer["cohort_version_id"] == "cv"
+    assert pointer["snapshot_id"] == snapshot_key("cv", "quality")
+    assert snapshot_exists(layout, snapshot_key("cv", "quality"))
+    assert not snapshot_exists(layout, snapshot_key("cv-new", "quality"))
+    assert (
+        layout.sources / "kitaru" / "cv" / "quality" / "batch.jsonl"
+    ).read_text(encoding="utf-8") == previous_batch
 
 
 def test_old_latest_pointer_without_extra_fields_still_reuses(tmp_path) -> None:

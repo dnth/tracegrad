@@ -68,6 +68,22 @@ def check_judge_fingerprint(manifest: Manifest, derived: str) -> None:
         )
 
 
+def _check_mapped_fingerprint(
+    manifest: Manifest,
+    *,
+    fingerprint: SourceFingerprint,
+    meta: SourceMeta,
+    evaluation_name: str,
+) -> None:
+    if not meta.traces_mapped:
+        return
+    derived = judge_fingerprint_for(
+        meta.evaluator_name or evaluation_name,
+        fingerprint.evaluator_version,
+    )
+    check_judge_fingerprint(manifest, derived)
+
+
 def _agent_version_counts(sessions: list[Any]) -> dict[str, int]:
     counts: dict[str, int] = {}
     for session in sessions:
@@ -163,12 +179,12 @@ def _assembled_source(
     evaluation_name: str,
     run_id: str | None,
 ) -> PreparedSource:
-    if meta.traces_mapped:
-        derived = judge_fingerprint_for(
-            meta.evaluator_name or evaluation_name,
-            fingerprint.evaluator_version,
-        )
-        check_judge_fingerprint(manifest, derived)
+    _check_mapped_fingerprint(
+        manifest,
+        fingerprint=fingerprint,
+        meta=meta,
+        evaluation_name=evaluation_name,
+    )
     if run_id is not None:
         persist_run_source(layout, run_id, fingerprint, meta)
     table = format_source_table(
@@ -250,6 +266,14 @@ def prepare_kitaru_source(
             fingerprint, meta, mapped, dropped = await _fetch_and_map(
                 gateway=gateway,
                 resolution=resolution,
+                evaluation_name=evaluation_name,
+            )
+            # Check before write_snapshot so a conflicting --refresh cannot
+            # clobber the last-good snapshot or latest.json pointer.
+            _check_mapped_fingerprint(
+                manifest,
+                fingerprint=fingerprint,
+                meta=meta,
                 evaluation_name=evaluation_name,
             )
             write_snapshot(
