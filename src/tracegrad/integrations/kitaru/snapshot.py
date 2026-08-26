@@ -19,7 +19,6 @@ from tracegrad.state import (
     atomic_write,
     atomic_write_json,
     contained_path,
-    initialize,
     validate_run_id,
 )
 
@@ -218,14 +217,6 @@ def persist_run_source(
     return target
 
 
-def load_run_source(project_root: str | Path | StateLayout, run_id: str) -> dict[str, Any] | None:
-    layout = initialize(project_root)
-    target = layout.runs / validate_run_id(run_id) / RUN_SOURCE_FILENAME
-    if not target.exists():
-        return None
-    return json.loads(target.read_text(encoding="utf-8"))
-
-
 def fingerprints_compatible(stored: SourceFingerprint, requested: Mapping[str, Any]) -> bool:
     """Whether a snapshot can be reused for this request without refetching."""
 
@@ -328,10 +319,13 @@ def snapshot_matches_request(
 
     if not snapshot_exists(layout, snapshot_id):
         return False
-    fingerprint = load_fingerprint(layout, snapshot_id)
-    if not fingerprints_compatible(fingerprint, {"evaluation_name": evaluation_name}):
+    try:
+        fingerprint = load_fingerprint(layout, snapshot_id)
+        if not fingerprints_compatible(fingerprint, {"evaluation_name": evaluation_name}):
+            return False
+        meta = load_meta(layout, snapshot_id)
+    except (OSError, ValueError):
         return False
-    meta = load_meta(layout, snapshot_id)
     if meta.cohort_name != cohort_name:
         return False
     if cohort_version is None:

@@ -55,6 +55,7 @@ from tracegrad.verify import (
     VerificationRequest,
     VerificationResult,
     VerifyError,
+    backend_is_configured,
     build_request,
     format_verification_report,
     load_run_source_payload,
@@ -1030,6 +1031,23 @@ def test_build_request_wraps_unreadable_template_as_verify_error(
             proposal=proposal,
             base_directory=tmp_path,
             source=source,
+        )
+
+
+def test_corrupt_run_source_sidecar_does_not_traceback_or_ungate(tmp_path: Path) -> None:
+    proposal = _proposal(tmp_path)
+    _source_sidecar(tmp_path)
+    sidecar = tmp_path / ".tracegrad" / "runs" / "run-0001" / "kitaru-source.json"
+    sidecar.write_text("not-json", encoding="utf-8")
+
+    assert load_run_source_payload(tmp_path, "run-0001") is None
+    assert backend_is_configured(tmp_path, "run-0001") is True
+    with pytest.raises(VerifyError, match="hash-matching"):
+        refuse_ungated_apply(
+            tmp_path,
+            run_id="run-0001",
+            candidate_prompt_hash=text_hash(candidate_prompt(PROMPT, proposal, [0])),
+            force=False,
         )
 
 

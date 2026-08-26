@@ -209,13 +209,22 @@ def load_run_source_payload(project_root: str | Path, run_id: str) -> dict[str, 
         return None
     import json
 
-    return json.loads(target.read_text(encoding="utf-8"))
+    try:
+        payload = json.loads(target.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return payload if isinstance(payload, dict) else None
 
 
 def backend_is_configured(project_root: str | Path, run_id: str) -> bool:
-    """Whether this run originated from a Kitaru source (ADR 0009)."""
+    """Whether this run originated from a Kitaru source (ADR 0009).
 
-    return load_run_source_payload(project_root, run_id) is not None
+    Presence of the sidecar is enough. A corrupt file must not ungate apply.
+    """
+
+    layout = initialize(project_root)
+    target = layout.runs / validate_run_id(run_id) / RUN_SOURCE_FILENAME
+    return target.is_file()
 
 
 def refuse_ungated_apply(

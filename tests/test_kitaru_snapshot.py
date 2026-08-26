@@ -595,3 +595,90 @@ def test_fetch_records_wraps_gather_failures_as_source_error() -> None:
     assert "TimeoutError" in message
     assert "batch is not mapped" in message
     assert caught.value.__cause__ is not None
+
+
+def test_corrupt_snapshot_dir_is_skipped_during_reuse(tmp_path) -> None:
+    layout = initialize(tmp_path)
+    write_snapshot(
+        layout,
+        fingerprint=_sample_fingerprint(),
+        meta=_sample_meta(),
+        mapped=_sample_mapped(),
+        dropped=[],
+    )
+    bad = layout.sources / "kitaru" / "cv-bad" / "quality"
+    bad.mkdir(parents=True)
+    (bad / "batch.jsonl").write_text("{}\n", encoding="utf-8")
+    (bad / "fingerprint.json").write_text("not-json", encoding="utf-8")
+    found = find_local_snapshot(
+        layout, cohort_name="support-production", evaluation_name="quality"
+    )
+    assert found == snapshot_key("cv", "quality")
+
+    meta_path = layout.sources / "kitaru" / "cv" / "quality" / "meta.json"
+    meta_path.unlink()
+    assert (
+        find_local_snapshot(
+            layout, cohort_name="support-production", evaluation_name="quality"
+        )
+        is None
+    )
+
+
+def test_source_sdk_errors_are_kitaru_source_errors(tmp_path) -> None:
+    resolution = CohortResolution(
+        cohort_id="c",
+        cohort_name="support-production",
+        cohort_version_id="cv-new",
+        display_version="week-35",
+        version_number=2,
+        agent_id="a",
+        session_count=0,
+    )
+
+    class ResolveBoom:
+        async def resolve_cohort(self, name: str, version: str | None = None) -> object:
+            raise TimeoutError("resolve 404")
+
+        async def close(self) -> None:
+            return None
+
+    class ListBoom:
+        async def resolve_cohort(self, name: str, version: str | None = None) -> object:
+            return resolution
+
+        async def list_sessions(self, cohort_version_id: str) -> list[object]:
+            raise TimeoutError("list sessions 404")
+
+        async def close(self) -> None:
+            return None
+
+    class EvaluatorBoom:
+        async def resolve_cohort(self, name: str, version: str | None = None) -> object:
+            return resolution
+
+        async def list_sessions(self, cohort_version_id: str) -> list[object]:
+            return []
+
+        async def fetch_records(self, sessions: list[object]) -> list[object]:
+            return []
+
+        async def evaluator_id(self, name: str) -> str:
+            raise TimeoutError("evaluator 404")
+
+        async def close(self) -> None:
+            return None
+
+    kwargs = dict(
+        project_root=tmp_path,
+        manifest=_manifest(),
+        cohort_name="support-production",
+        evaluation_name="quality",
+        refresh=True,
+    )
+    with pytest.raises(KitaruSourceError, match="resolving the cohort"):
+        prepare_kitaru_source(**kwargs, gateway=ResolveBoom())
+    with pytest.raises(KitaruSourceError, match="listing sessions"):
+        prepare_kitaru_source(**kwargs, gateway=ListBoom())
+    with pytest.raises(KitaruSourceError, match="looking up the evaluator"):
+        prepare_kitaru_source(**kwargs, gateway=EvaluatorBoom())

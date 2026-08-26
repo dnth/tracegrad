@@ -100,13 +100,33 @@ def _single_agent_version(counts: dict[str, int]) -> str | None:
     return None
 
 
+async def _await_source(awaitable: Any, *, what: str) -> Any:
+    """Run one SDK awaitable; wrap raw failures as ``KitaruSourceError``.
+
+    Fail-closed: the batch is not mapped. Do not persist a partial snapshot.
+    """
+
+    try:
+        return await awaitable
+    except KitaruSourceError:
+        raise
+    except Exception as exc:
+        raise KitaruSourceError(
+            "source fetch aborted: "
+            f"{what} failed ({type(exc).__name__}: {exc}). The batch is not mapped."
+        ) from exc
+
+
 async def _fetch_and_map(
     *,
     gateway: Any,
     resolution: Any,
     evaluation_name: str,
 ) -> tuple[Any, Any, Any, Any]:
-    sessions = await gateway.list_sessions(resolution.cohort_version_id)
+    sessions = await _await_source(
+        gateway.list_sessions(resolution.cohort_version_id),
+        what="listing sessions",
+    )
     records = await gateway.fetch_records(sessions)
     mapping = map_batch(records, evaluation_name)
     if isinstance(mapping, str) and mapping == REASON_AMBIGUOUS_EVALUATION:
@@ -126,8 +146,9 @@ async def _fetch_and_map(
             f"resolves to more than one evaluator_version across the cohort "
             f"({breakdown}). Refusing to mix. See ADR 0003."
         )
-    evaluator_id = await gateway.evaluator_id(
-        mapping.evaluator_name or evaluation_name
+    evaluator_id = await _await_source(
+        gateway.evaluator_id(mapping.evaluator_name or evaluation_name),
+        what="looking up the evaluator",
     )
     fingerprint = SourceFingerprint(
         source="kitaru",
@@ -262,7 +283,10 @@ def prepare_kitaru_source(
 
     async def _run() -> PreparedSource:
         try:
-            resolution = await gateway.resolve_cohort(cohort_name, cohort_version)
+            resolution = await _await_source(
+                gateway.resolve_cohort(cohort_name, cohort_version),
+                what="resolving the cohort",
+            )
             fingerprint, meta, mapped, dropped = await _fetch_and_map(
                 gateway=gateway,
                 resolution=resolution,
