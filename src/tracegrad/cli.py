@@ -484,7 +484,19 @@ def command_verify(args: argparse.Namespace, out: TextIO) -> int:
         ),
         file=out,
     )
-    return 0 if result.status != "failed" else 1
+    return verify_exit_code(result.status)
+
+
+def verify_exit_code(status: str) -> int:
+    """Process exit for a finished verify.
+
+    0 only when the replay ``completed``. Partial, canceled, failed, and
+    incomplete stay non-zero so ``verify && apply`` cannot write from a
+    half-run. Apply after REVIEW is a separate hash+cohort / ``--force``
+    decision.
+    """
+
+    return 0 if status == "completed" else 1
 
 
 def build_parser() -> argparse.ArgumentParser:

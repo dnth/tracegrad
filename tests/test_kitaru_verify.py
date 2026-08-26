@@ -1210,6 +1210,85 @@ def test_verify_cli_refuses_a_stale_proposal_before_kitaru(tmp_path: Path) -> No
     assert any(record.get("event") == "stale" for record in applied_history(tmp_path))
 
 
+@pytest.mark.parametrize(
+    ("status", "code"),
+    [
+        ("completed", 0),
+        ("partial", 1),
+        ("canceled", 1),
+        ("failed", 1),
+        ("incomplete", 1),
+    ],
+)
+def test_verify_exit_code_is_zero_only_for_completed(status: str, code: int) -> None:
+    from tracegrad.cli import verify_exit_code
+
+    assert verify_exit_code(status) == code
+
+
+@pytest.mark.parametrize(
+    ("status", "code"),
+    [
+        ("completed", 0),
+        ("partial", 1),
+        ("failed", 1),
+    ],
+)
+def test_verify_cli_exits_zero_only_when_status_is_completed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, status: str, code: int
+) -> None:
+    from tracegrad import cli
+
+    proposal = _proposal(tmp_path)
+    _source_sidecar(tmp_path)
+    written = candidate_prompt(PROMPT, proposal, [0])
+    digest = text_hash(written)
+
+    def fake_run(project_root: object, request: VerificationRequest, backend: object) -> VerificationResult:
+        return VerificationResult(
+            status=status,  # type: ignore[arg-type]
+            baseline_count=1,
+            candidate_count=1,
+            improved_sessions=[],
+            regressed_sessions=[],
+            unchanged_sessions=[],
+            diverged_sessions=[],
+            replay_failures=[],
+            cohort_version_id=request.cohort_version_id,
+            agent_version_id=request.agent_version_id,
+            evaluator_version=str(request.evaluator_version),
+            baseline_prompt_hash=request.baseline_prompt_hash,
+            candidate_prompt_hash=digest,
+            verification_fingerprint="fp",
+            experiment_run_id="erun-1",
+        )
+
+    monkeypatch.setattr("tracegrad.verify.run_verification", fake_run)
+    monkeypatch.setattr(
+        "tracegrad.integrations.kitaru.backend.KitaruVerificationBackend",
+        lambda *args, **kwargs: object(),
+    )
+    stream = io.StringIO()
+    assert (
+        cli.main(
+            [
+                "verify",
+                "--backend",
+                "kitaru",
+                "--run",
+                "run-0001",
+                "--project-root",
+                str(tmp_path),
+                "--base-directory",
+                str(tmp_path),
+            ],
+            out=stream,
+        )
+        == code
+    )
+    assert "tracegrad verification" in stream.getvalue()
+
+
 def test_report_lists_replay_failures_next_to_divergence() -> None:
     request = _request(session_numbers={"crash-session": 7})
     result = VerificationResult(
