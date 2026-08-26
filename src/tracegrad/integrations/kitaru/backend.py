@@ -224,17 +224,39 @@ class KitaruVerificationBackend:
     name = "kitaru"
 
     def __init__(self, gateway: KitaruGateway | None = None) -> None:
-        require_kitaru()
         self._gateway = gateway
         self._owns = gateway is None
+        if self._owns:
+            require_kitaru()
 
     def _gw(self) -> KitaruGateway:
         if self._gateway is None:
             self._gateway = KitaruGateway()
         return self._gateway
 
+    def _run_async(self, coro: Any) -> Any:
+        """Run one backend coroutine on a fresh event loop.
+
+        ``asyncio.run`` closes the loop when it returns. Caching an
+        ``httpx.AsyncClient`` across preflight/submit/collect therefore
+        binds the next call to a dead loop. Owned gateways are closed and
+        dropped in the same coroutine that used them.
+        """
+
+        async def _isolated() -> Any:
+            try:
+                return await coro
+            finally:
+                if self._owns:
+                    gateway = self._gateway
+                    self._gateway = None
+                    if gateway is not None:
+                        await gateway.close()
+
+        return run_async(_isolated())
+
     def preflight(self, request: VerificationRequest) -> None:
-        run_async(self._preflight(request))
+        self._run_async(self._preflight(request))
 
     async def _preflight(self, request: VerificationRequest) -> None:
         gateway = self._gw()
@@ -274,7 +296,7 @@ class KitaruVerificationBackend:
             )
 
     def submit(self, request: VerificationRequest) -> SubmittedVerification:
-        return run_async(self._submit(request))
+        return self._run_async(self._submit(request))
 
     async def _submit(self, request: VerificationRequest) -> SubmittedVerification:
         from kitaru.api_models.v1.experiment import ExperimentCreateRequest
@@ -308,7 +330,7 @@ class KitaruVerificationBackend:
     def collect(
         self, request: VerificationRequest, submitted: SubmittedVerification
     ) -> VerificationResult:
-        return run_async(self._collect(request, submitted))
+        return self._run_async(self._collect(request, submitted))
 
     async def _collect(
         self, request: VerificationRequest, submitted: SubmittedVerification
@@ -424,9 +446,6 @@ class KitaruVerificationBackend:
             verification_fingerprint=verification_fingerprint_for(request),
             experiment_run_id=submitted.experiment_run_id,
         )
-        if self._owns and self._gateway is not None:
-            await self._gateway.close()
-            self._gateway = None
         return result
 
 

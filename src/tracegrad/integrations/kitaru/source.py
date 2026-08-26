@@ -110,7 +110,9 @@ async def _fetch_and_map(
             f"resolves to more than one evaluator_version across the cohort "
             f"({breakdown}). Refusing to mix. See ADR 0003."
         )
-    evaluator_id = await gateway.evaluator_id(evaluation_name)
+    evaluator_id = await gateway.evaluator_id(
+        mapping.evaluator_name or evaluation_name
+    )
     fingerprint = SourceFingerprint(
         source="kitaru",
         cohort_id=resolution.cohort_id,

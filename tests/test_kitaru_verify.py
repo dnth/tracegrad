@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -42,6 +43,7 @@ from tracegrad.verify import (
     DIVERGENCE_SCORE,
     DIVERGENCE_SELECT,
     Divergence,
+    ReplayFailure,
     SubmittedVerification,
     VerificationRequest,
     VerificationResult,
@@ -584,3 +586,82 @@ def test_verification_id_is_path_safe() -> None:
     vid = verification_id_for("run-0001", "sha256:abcdef1234567890")
     assert vid.startswith("verify-run-0001-")
     assert "/" not in vid
+
+
+def test_report_lists_replay_failures_next_to_divergence() -> None:
+    request = _request(session_numbers={"crash-session": 7})
+    result = VerificationResult(
+        status="partial",
+        baseline_count=2,
+        candidate_count=1,
+        improved_sessions=[],
+        regressed_sessions=[],
+        unchanged_sessions=[],
+        diverged_sessions=[
+            Divergence(
+                session_id="miss-session",
+                kind="TOOL_HISTORY_MISS",
+                detail="No history result for tool 'search'",
+                number=3,
+            )
+        ],
+        replay_failures=[
+            ReplayFailure(
+                session_id="crash-session",
+                error="worker process exited 1",
+                number=7,
+            )
+        ],
+        cohort_version_id=request.cohort_version_id,
+        agent_version_id=request.agent_version_id,
+        evaluator_version=str(request.evaluator_version),
+        baseline_prompt_hash=request.baseline_prompt_hash,
+        candidate_prompt_hash=request.candidate_prompt_hash,
+        verification_fingerprint="fp",
+        experiment_run_id="erun-1",
+    )
+    report = format_verification_report(result, request)
+    assert "Replay failures           1" in report
+    assert "Diverged                  1" in report
+    assert "Replay failures" in report.split("Divergence", 1)[1]
+    assert "#7   worker process exited 1" in report
+    assert "TOOL_HISTORY_MISS" in report
+
+
+def test_second_run_async_does_not_reuse_a_closed_loop_client(monkeypatch: pytest.MonkeyPatch) -> None:
+    from tracegrad.integrations.kitaru import backend as backend_mod
+
+    created: list[object] = []
+
+    class LoopBoundGateway:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            self._loop: asyncio.AbstractEventLoop | None = None
+            self._closed = False
+            created.append(self)
+
+        async def probe(self) -> str:
+            loop = asyncio.get_running_loop()
+            if self._closed or (
+                self._loop is not None and (self._loop is not loop or self._loop.is_closed())
+            ):
+                raise RuntimeError("reused client bound to a closed loop")
+            self._loop = loop
+            return "ok"
+
+        async def close(self) -> None:
+            self._closed = True
+
+    monkeypatch.setattr(backend_mod, "require_kitaru", lambda: None)
+    monkeypatch.setattr(backend_mod, "KitaruGateway", LoopBoundGateway)
+
+    backend = backend_mod.KitaruVerificationBackend()
+
+    async def probe() -> str:
+        return await backend._gw().probe()
+
+    assert backend._run_async(probe()) == "ok"
+    assert backend._run_async(probe()) == "ok"
+    assert len(created) == 2
+    assert created[0] is not created[1]
+    assert created[0]._closed is True
+    assert created[1]._closed is True

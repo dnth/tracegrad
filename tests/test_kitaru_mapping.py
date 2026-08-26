@@ -6,6 +6,7 @@ duck-typed so core-only CI stays green without the extra.
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 
 import pytest
@@ -302,3 +303,46 @@ def test_source_and_batch_reasons_stay_kebab_case() -> None:
     assert isinstance(drop, SourceDrop)
     assert "-" in drop.reason
     assert drop.reason == drop.reason.lower()
+
+
+def test_evaluator_id_looks_up_mapped_evaluator_name_not_the_cli_flag() -> None:
+    from tracegrad.integrations.kitaru.client import CohortResolution
+    from tracegrad.integrations.kitaru.source import _fetch_and_map
+
+    looked_up: list[str] = []
+    evaluation = _eval()
+    evaluation.evaluator_name = "quality-judge"
+
+    class Gateway:
+        async def list_sessions(self, cohort_version_id: str) -> list[object]:
+            return [_session()]
+
+        async def fetch_records(self, sessions: list[object]) -> list[object]:
+            return [(sessions[0], [_node(0)], [evaluation])]
+
+        async def evaluator_id(self, name: str) -> str:
+            looked_up.append(name)
+            if name != "quality-judge":
+                raise LookupError(f"kitaru evaluator {name!r} was not found")
+            return "eid-judge"
+
+    fingerprint, meta, mapped, _dropped = asyncio.run(
+        _fetch_and_map(
+            gateway=Gateway(),
+            resolution=CohortResolution(
+                cohort_id="c",
+                cohort_name="support-production",
+                cohort_version_id="cv",
+                display_version="week-34",
+                version_number=1,
+                agent_id="a",
+                session_count=1,
+            ),
+            evaluation_name="quality",
+        )
+    )
+    assert looked_up == ["quality-judge"]
+    assert fingerprint.evaluator_id == "eid-judge"
+    assert fingerprint.evaluation_name == "quality"
+    assert meta.evaluator_name == "quality-judge"
+    assert mapped

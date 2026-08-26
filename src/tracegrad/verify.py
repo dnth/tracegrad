@@ -406,6 +406,7 @@ def format_verification_report(
         f"Regressed          {len(result.regressed_sessions):8d}",
         f"Unchanged          {len(result.unchanged_sessions):8d}",
         f"Diverged           {len(result.diverged_sessions):8d}",
+        f"Replay failures    {len(result.replay_failures):8d}",
     ]
     if result.regressed_sessions:
         lines.append("")
@@ -422,6 +423,13 @@ def format_verification_report(
             number = item.number or request.session_numbers.get(item.session_id)
             prefix = f"#{number}" if number is not None else item.session_id[:8]
             lines.append(f"{prefix}   {item.kind}  {item.detail}".rstrip())
+    if result.replay_failures:
+        lines.append("")
+        lines.append("Replay failures")
+        for item in result.replay_failures:
+            number = item.number or request.session_numbers.get(item.session_id)
+            prefix = f"#{number}" if number is not None else item.session_id[:8]
+            lines.append(f"{prefix}   {item.error}".rstrip())
     lines.append("")
     lines.append(f"Experiment run: {_short_id(result.experiment_run_id)}")
     if server_url:
