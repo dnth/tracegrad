@@ -614,6 +614,25 @@ def test_build_request_refuses_a_stale_proposal_without_submitting(tmp_path: Pat
     assert list(layout.verification.glob("*")) == []
 
 
+def test_build_request_wraps_unreadable_template_as_verify_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    proposal = _proposal(tmp_path)
+    _source_sidecar(tmp_path)
+    source = load_run_source_payload(tmp_path, "run-0001")
+    assert source is not None
+    (tmp_path / "prompt.md").unlink()
+    monkeypatch.setattr("tracegrad.verify.is_stale", lambda *args, **kwargs: False)
+    with pytest.raises(VerifyError, match="could not read template"):
+        build_request(
+            project_root=tmp_path,
+            run_id="run-0001",
+            proposal=proposal,
+            base_directory=tmp_path,
+            source=source,
+        )
+
+
 def test_verify_cli_refuses_a_stale_proposal_before_kitaru(tmp_path: Path) -> None:
     from tracegrad import cli
 

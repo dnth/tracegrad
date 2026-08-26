@@ -253,7 +253,10 @@ def build_request(
             "the proposal is stale — re-run tracegrad"
         )
     template = contained_path(base_directory, proposal.template_file)
-    current = template.read_text(encoding="utf-8")
+    try:
+        current = template.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise VerifyError(f"could not read template {template}: {exc}") from exc
     candidate = candidate_prompt(
         current, proposal, range(len(proposal.edits))
     )
