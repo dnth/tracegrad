@@ -7,6 +7,7 @@ through the orchestrator — a gate fed the wrong number, a ledger with no calle
 from __future__ import annotations
 
 import json
+import re
 import shutil
 from pathlib import Path
 
@@ -191,3 +192,49 @@ def test_jobs_does_not_change_what_a_run_produces(tmp_path: Path) -> None:
     assert [theme.numerator for theme in concurrent.aggregation.themes] == [
         theme.numerator for theme in sequential.aggregation.themes
     ]
+
+
+def test_the_rc_is_read_from_the_project_root_not_the_base_directory(tmp_path: Path) -> None:
+    # The rc is documented at the project root; base_directory is a subdirectory.
+    # If the config lookup regresses to base_directory, neverDelete never loads
+    # and this DELETE sails through the gates.
+    project = _project(tmp_path)
+    (project / ".tracegradrc").write_text('neverDelete = ["help-centre"]\n', encoding="utf-8")
+
+    def delete_synthesis(system: str, user: str) -> str:
+        catalogue = dict(
+            re.findall(r"^(i-[0-9a-f]{12}-\d\d): (.*?)(?:\s+\[non-editable.*)?$", user, re.M)
+        )
+        target = next(item for item, text in catalogue.items() if "Cite the help-centre" in text)
+        return json.dumps(
+            {
+                "edits": [
+                    {
+                        "instruction_id": target,
+                        "operation": "DELETE",
+                        "text": "",
+                        "covers_theme": "missing-citation",
+                        "watch_metric": "missing-citation",
+                    }
+                ],
+                "reasoning": "drop the citation instruction entirely",
+            }
+        )
+
+    result = run_pipeline(
+        project / "example" / "batch.jsonl",
+        project / "example" / "manifest.json",
+        run_id="run-0001",
+        project_root=project,
+        base_directory=project / "example",
+        attribution_backend=FakeBackend(handler=_attribution_response, name="fake-attribution"),
+        synthesis_backend=FakeBackend(handler=delete_synthesis, name="fake-synthesis"),
+        session_id="session-1",
+    )
+
+    assert result.proposal is not None
+    assert result.proposal.edits == []
+    assert any(
+        entry["reason"] == "G7-variable-span" and "neverDelete" in entry["detail"]
+        for entry in result.proposal.rejected
+    )
