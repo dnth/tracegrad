@@ -70,7 +70,9 @@ def test_estimate_previews_cost_without_a_model(tmp_path: Path) -> None:
     assert "attribution call" in output
 
 
-def test_run_reports_themes_drops_and_proposals(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_run_reports_themes_drops_and_proposals(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     project = _example(tmp_path)
     from test_e2e import _attribution_response, _synthesis_response  # noqa: PLC0415
 
@@ -162,6 +164,105 @@ def test_status_reports_state_and_prompt_size(tmp_path: Path) -> None:
     assert "runs recorded: 0" in output
     assert "instructions" in output
     assert "tokens (proxy count)" in output
+
+
+def test_cli_commands_load_rc_from_project_root_not_base_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tracegrad.llm import FakeBackend
+
+    project_root = tmp_path / "project"
+    base_directory = tmp_path / "base"
+    project_root.mkdir()
+    base_directory.mkdir()
+    (project_root / ".tracegradrc").write_text(
+        "minCoverage = 0.0\nminEffect = 0.1\nconvergenceRuns = 1\n",
+        encoding="utf-8",
+    )
+    (base_directory / ".tracegradrc").write_text(
+        "minCoverage = 1.0\nminEffect = 0.9\nconvergenceRuns = 99\n",
+        encoding="utf-8",
+    )
+
+    prompt = base_directory / "prompt.md"
+    prompt.write_text("- Be concise.\n", encoding="utf-8")
+    manifest = base_directory / "manifest.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "template_file": "prompt.md",
+                "engine": "none",
+                "judge_fingerprint": "test-judge",
+            }
+        ),
+        encoding="utf-8",
+    )
+    traces = base_directory / "traces.jsonl"
+    traces.write_text(
+        json.dumps(
+            {
+                "trace_id": "trace-1",
+                "input": "Question?",
+                "output": "Answer.",
+                "judge": {
+                    "score": 0.0,
+                    "rationale": "A rationale long enough to pass ingestion.",
+                },
+                "prompt_hash": "sha256:test",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    layout = initialize(project_root)
+    for index, numerator in ((1, 80), (2, 20)):
+        atomic_write_json(
+            layout.reports / f"run-{index:04d}.json",
+            Report(
+                applied_prompt_hash="sha256:test",
+                clusters=[Cluster(theme="drift", numerator=numerator, denominator=100)],
+            ).model_dump(mode="json"),
+        )
+    (layout.ledgers / "runs.jsonl").write_text('{"proposed": 0}\n', encoding="utf-8")
+
+    monkeypatch.setattr(cli, "resolve_attribution_backend", lambda _config: FakeBackend())
+
+    attribute_code, attribute_output = _run(
+        "attribute",
+        "--traces",
+        str(traces),
+        "--manifest",
+        str(manifest),
+        "--project-root",
+        str(project_root),
+        "--base-directory",
+        str(base_directory),
+    )
+    assert attribute_code == 0
+    assert attribute_output == "attributed 0/1 traces\n"
+
+    trends_code, trends_output = _run(
+        "trends",
+        "--project-root",
+        str(project_root),
+        "--base-directory",
+        str(base_directory),
+    )
+    assert trends_code == 0
+    assert "improved" in trends_output
+    assert "no-signal" not in trends_output
+
+    status_code, status_output = _run(
+        "status",
+        "--project-root",
+        str(project_root),
+        "--base-directory",
+        str(base_directory),
+    )
+    assert status_code == 0
+    assert "runs recorded: 1" in status_output
+    assert "converged: 1 consecutive runs proposed nothing" in status_output
 
 
 def _saved_proposal(project: Path) -> None:
@@ -268,7 +369,9 @@ def test_apply_without_a_proposal_fails_cleanly(tmp_path: Path) -> None:
     assert "no proposal" in output
 
 
-def test_errors_are_reported_without_a_traceback(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_errors_are_reported_without_a_traceback(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     code, _ = _run(
         "run",
         "--traces",
