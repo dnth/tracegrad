@@ -136,10 +136,6 @@ class KitaruGateway:
                 return item
             if str(item.version) == version_ref:
                 return item
-        try:
-            _uuid(version_ref)
-        except ValueError:
-            return None
         return None
 
     async def _list_versions(self, cohort_id: uuid.UUID) -> list[Any]:
@@ -198,7 +194,19 @@ class KitaruGateway:
             async with semaphore:
                 return await self.session_bundle(str(session.id))
 
-        return list(await asyncio.gather(*(one(session) for session in sessions)))
+        if not sessions:
+            return []
+        # Fail-closed: one 404/timeout aborts the batch. Do not map a partial
+        # cohort. Wrap so the CLI prints KitaruSourceError instead of a traceback.
+        try:
+            return list(await asyncio.gather(*(one(session) for session in sessions)))
+        except KitaruSourceError:
+            raise
+        except Exception as exc:
+            raise KitaruSourceError(
+                "source fetch aborted: fetching a session payload failed "
+                f"({type(exc).__name__}: {exc}). The batch is not mapped."
+            ) from exc
 
     async def evaluator_id(self, name: str) -> str:
         from kitaru.api_models.v1.evaluator import EvaluatorListParams

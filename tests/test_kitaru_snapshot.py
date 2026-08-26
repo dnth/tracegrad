@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,7 +11,8 @@ import pytest
 
 from tracegrad.canonical import text_hash
 from tracegrad.integrations.kitaru.accounting import format_source_table
-from tracegrad.integrations.kitaru.client import CohortResolution
+from tracegrad.integrations.kitaru.client import CohortResolution, KitaruGateway
+from tracegrad.integrations.kitaru.errors import KitaruSourceError
 from tracegrad.integrations.kitaru.mapping import MappedTrace, SourceDrop
 from tracegrad.integrations.kitaru.snapshot import (
     LATEST_POINTER,
@@ -556,3 +558,40 @@ def test_missing_pointer_picks_newest_matching_snapshot(tmp_path) -> None:
         layout, cohort_name="support-production", evaluation_name="quality"
     )
     assert found == snapshot_key("aaa-old", "quality")
+
+
+def test_pick_version_matches_id_display_and_number_then_none() -> None:
+    versions = [
+        SimpleNamespace(
+            id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            display_version="week-34",
+            version=1,
+        ),
+        SimpleNamespace(
+            id="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+            display_version="week-35",
+            version=2,
+        ),
+    ]
+    pick = KitaruGateway._pick_version
+    sentinel = object()
+    assert pick(sentinel, versions, 2, None).version == 2
+    assert pick(sentinel, versions, 2, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa").version == 1
+    assert pick(sentinel, versions, 2, "week-35").version == 2
+    assert pick(sentinel, versions, 2, "1").version == 1
+    assert pick(sentinel, versions, 2, "cccccccc-cccc-4ccc-8ccc-cccccccccccc") is None
+    assert pick(sentinel, versions, 2, "not-a-version") is None
+    assert pick(sentinel, [], 1, None) is None
+
+
+def test_fetch_records_wraps_gather_failures_as_source_error() -> None:
+    class Fake:
+        async def session_bundle(self, session_id: str) -> tuple[object, ...]:
+            raise TimeoutError(f"404 fetching session {session_id}")
+
+    with pytest.raises(KitaruSourceError, match="source fetch aborted") as caught:
+        asyncio.run(KitaruGateway.fetch_records(Fake(), [SimpleNamespace(id="s0")]))
+    message = str(caught.value)
+    assert "TimeoutError" in message
+    assert "batch is not mapped" in message
+    assert caught.value.__cause__ is not None

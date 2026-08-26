@@ -228,6 +228,25 @@ def classify_scores(
     return "unchanged"
 
 
+async def _await_verify(awaitable: Any, *, what: str) -> Any:
+    """Run one SDK awaitable; wrap raw failures as ``KitaruVerifyError``.
+
+    Fail-closed: do not isolate as ReplayFailure, persist a result, or ungate
+    apply. Resume redoes collect.
+    """
+
+    try:
+        return await awaitable
+    except KitaruVerifyError:
+        raise
+    except Exception as exc:
+        raise KitaruVerifyError(
+            f"{what} failed ({type(exc).__name__}: {exc}). "
+            "Apply stays gated. Resume redoes collect. Pass --force on apply "
+            "if you must write anyway."
+        ) from exc
+
+
 class KitaruVerificationBackend:
     """Submit and collect a Kitaru experiment run for one candidate prompt."""
 
@@ -321,23 +340,29 @@ class KitaruVerificationBackend:
 
         gateway = self._gw()
         digest = request.candidate_prompt_hash.removeprefix("sha256:")[:8]
-        experiment = await gateway.create_experiment(
-            ExperimentCreateRequest(
-                name=f"tracegrad-{request.run_id}-{digest}",
-                description=f"tracegrad verification of {request.run_id}",
-                agent_id=uuid.UUID(request.agent_id),
-                override=_override(request.candidate_prompt),
-                tool_policy=_history_tool_policy(),
-                evaluators=[_evaluator_config(request)],
-            )
-        )
-        run = await gateway.start_run(
-            str(experiment.id),
-            ExperimentRunCreateRequest(
-                cohort_version_id=uuid.UUID(request.cohort_version_id),
-                agent_version_id=uuid.UUID(request.agent_version_id),
-                evaluate_baselines=True,
+        experiment = await _await_verify(
+            gateway.create_experiment(
+                ExperimentCreateRequest(
+                    name=f"tracegrad-{request.run_id}-{digest}",
+                    description=f"tracegrad verification of {request.run_id}",
+                    agent_id=uuid.UUID(request.agent_id),
+                    override=_override(request.candidate_prompt),
+                    tool_policy=_history_tool_policy(),
+                    evaluators=[_evaluator_config(request)],
+                )
             ),
+            what="submit aborted: creating the experiment",
+        )
+        run = await _await_verify(
+            gateway.start_run(
+                str(experiment.id),
+                ExperimentRunCreateRequest(
+                    cohort_version_id=uuid.UUID(request.cohort_version_id),
+                    agent_version_id=uuid.UUID(request.agent_version_id),
+                    evaluate_baselines=True,
+                ),
+            ),
+            what="submit aborted: starting the experiment run",
         )
         return SubmittedVerification(
             experiment_id=str(experiment.id),
@@ -353,9 +378,15 @@ class KitaruVerificationBackend:
         self, request: VerificationRequest, submitted: SubmittedVerification
     ) -> VerificationResult:
         gateway = self._gw()
-        run = await gateway.wait_for_experiment_run(submitted.experiment_run_id)
+        run = await _await_verify(
+            gateway.wait_for_experiment_run(submitted.experiment_run_id),
+            what="collect aborted: waiting for the experiment run",
+        )
         status = str(getattr(getattr(run, "status", None), "value", getattr(run, "status", "completed")))
-        replays = await gateway.list_replays(submitted.experiment_run_id)
+        replays = await _await_verify(
+            gateway.list_replays(submitted.experiment_run_id),
+            what="collect aborted: listing replays",
+        )
         improved: list[str] = []
         regressed: list[str] = []
         unchanged: list[str] = []
@@ -435,7 +466,10 @@ class KitaruVerificationBackend:
         # Headline numbers from /api/v1/ui/experiment-runs/{id}/evaluation-aggregates
         # so they match the Kitaru UI. That namespace is UI-support, not an obvious
         # third-party contract; the <0.23 pin contains it.
-        aggregates = await gateway.evaluation_aggregates(submitted.experiment_run_id)
+        aggregates = await _await_verify(
+            gateway.evaluation_aggregates(submitted.experiment_run_id),
+            what="collect aborted: fetching evaluation aggregates",
+        )
         baseline_stats, candidate_stats = _pick_aggregate(aggregates, request.evaluation_name)
         run_status = "failed" if status == "failed" else (
             "partial" if failures or status != "completed" else "completed"
@@ -499,16 +533,10 @@ async def _fetch_replay_payloads(
             return baseline_nodes, result_nodes, baseline_evals, candidate_evals
 
     # Fail-closed: gather raises on the first fetch error (no return_exceptions).
-    try:
-        return list(await asyncio.gather(*(one(replay) for replay in replays)))
-    except KitaruVerifyError:
-        raise
-    except Exception as exc:
-        raise KitaruVerifyError(
-            "collect aborted: fetching a replay payload failed "
-            f"({type(exc).__name__}: {exc}). Apply stays gated. Resume redoes "
-            "collect. Pass --force on apply if you must write anyway."
-        ) from exc
+    return await _await_verify(
+        asyncio.gather(*(one(replay) for replay in replays)),
+        what="collect aborted: fetching a replay payload",
+    )
 
 
 def _maybe_float(value: Any) -> float | None:

@@ -840,6 +840,127 @@ def test_collect_fetch_error_does_not_persist_result_or_ungate_apply(tmp_path: P
         )
 
 
+def _collect_sdk_error_gateway(broken: str) -> object:
+    def _root(system: str) -> SimpleNamespace:
+        return SimpleNamespace(
+            index=0,
+            parent_index=None,
+            secondary_parent_indexes=[],
+            node_type="llm_call",
+            inputs={"system": system},
+            system_prompt_selector="/system",
+        )
+
+    class Gateway:
+        async def wait_for_experiment_run(
+            self, run_id: str, timeout: float | None = None
+        ) -> object:
+            if broken == "wait":
+                raise TimeoutError("wait timed out")
+            return SimpleNamespace(status="completed")
+
+        async def list_replays(self, experiment_run_id: str) -> list[object]:
+            if broken == "replays":
+                raise RuntimeError("APIError listing replays")
+            return [
+                SimpleNamespace(
+                    baseline_session_id="s0",
+                    result_session_id="r0",
+                    status="completed",
+                    error=None,
+                )
+            ]
+
+        async def session_nodes(self, session_id: str) -> tuple[object, ...]:
+            system = CANDIDATE if session_id.startswith("r") else PROMPT
+            return (_root(system),)
+
+        async def evaluations_for(self, session_id: str) -> list[object]:
+            passed = session_id.startswith("r")
+            return [
+                SimpleNamespace(
+                    name="quality",
+                    evaluator_version=3,
+                    passed=passed,
+                    score=0.9 if passed else 0.2,
+                    id=session_id,
+                )
+            ]
+
+        async def evaluation_aggregates(self, experiment_run_id: str) -> list[object]:
+            if broken == "aggregates":
+                raise TimeoutError("aggregates 404")
+            return [
+                {
+                    "name": "quality",
+                    "baseline": {"count": 1, "mean": 0.2, "pass_rate": 0.0},
+                    "result": {"count": 1, "mean": 0.9, "pass_rate": 1.0},
+                }
+            ]
+
+    return Gateway()
+
+
+@pytest.mark.parametrize("broken", ["wait", "replays", "aggregates"])
+def test_collect_sdk_errors_do_not_persist_result_or_ungate_apply(
+    tmp_path: Path, broken: str
+) -> None:
+    proposal = _proposal(tmp_path)
+    _source_sidecar(tmp_path)
+    written = candidate_prompt(PROMPT, proposal, [0])
+    digest = text_hash(written)
+    request = _request(candidate_prompt=written, candidate_prompt_hash=digest)
+
+    class Backend:
+        name = "kitaru"
+
+        def preflight(self, request: VerificationRequest) -> None:
+            return None
+
+        def submit(self, request: VerificationRequest) -> SubmittedVerification:
+            return SubmittedVerification(experiment_id="exp-1", experiment_run_id="erun-1")
+
+        def collect(
+            self, request: VerificationRequest, submitted: SubmittedVerification
+        ) -> VerificationResult:
+            return KitaruVerificationBackend(
+                gateway=_collect_sdk_error_gateway(broken)
+            ).collect(request, submitted)
+
+    with pytest.raises(KitaruVerifyError, match="collect aborted") as caught:
+        run_verification(tmp_path, request, Backend())
+    assert "Apply stays gated" in str(caught.value)
+    assert matching_verification(tmp_path, digest) is None
+    state = load_verification_state(
+        initialize(tmp_path), verification_id_for("run-0001", digest)
+    )
+    assert state is not None
+    assert state.experiment_run_id == "erun-1"
+    assert state.result is None
+
+
+def test_submit_sdk_errors_are_kitaru_verify_errors() -> None:
+    pytest.importorskip("kitaru")
+
+    class Gateway:
+        async def create_experiment(self, request: object) -> object:
+            raise RuntimeError("APIError creating experiment")
+
+        async def start_run(self, experiment_id: str, request: object) -> object:
+            raise AssertionError("start_run must not run after create_experiment fails")
+
+    backend = KitaruVerificationBackend(gateway=Gateway())
+    request = _request(
+        agent_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        agent_version_id="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        cohort_version_id="cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+    )
+    with pytest.raises(KitaruVerifyError, match="submit aborted") as caught:
+        backend.submit(request)
+    assert "creating the experiment" in str(caught.value)
+    assert "Apply stays gated" in str(caught.value)
+
+
 def test_apply_gate_accepts_a_finished_failed_report(tmp_path: Path) -> None:
     """A finished REVIEW/FAILED report still allows apply; do not require completed."""
 
