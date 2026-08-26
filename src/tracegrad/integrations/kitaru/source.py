@@ -134,6 +134,7 @@ async def _fetch_and_map(
     meta = SourceMeta(
         cohort_name=resolution.cohort_name,
         display_version=resolution.display_version,
+        version_number=int(resolution.version_number),
         agent_version_id=_single_agent_version(counts),
         agent_version_counts=counts,
         session_numbers={

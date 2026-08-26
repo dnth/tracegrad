@@ -56,6 +56,7 @@ class SourceMeta(BaseModel):
 
     cohort_name: StrictStr
     display_version: StrictStr | None = None
+    version_number: StrictInt | None = None
     agent_version_id: StrictStr | None = None
     agent_version_counts: dict[StrictStr, StrictInt] = Field(default_factory=dict)
     session_numbers: dict[StrictStr, StrictInt] = Field(default_factory=dict)
@@ -157,6 +158,7 @@ def write_snapshot(
             "cohort_version_id": fingerprint.cohort_version_id,
             "snapshot_id": snapshot_id,
             "display_version": meta.display_version,
+            "version_number": meta.version_number,
             "batch": str(target / BATCH_FILENAME),
         },
     )
@@ -338,6 +340,10 @@ def snapshot_matches_request(
         fingerprint.cohort_version_id == cohort_version
         or meta.display_version == cohort_version
         or snapshot_id == cohort_version
+        or (
+            meta.version_number is not None
+            and str(meta.version_number) == cohort_version
+        )
     )
 
 

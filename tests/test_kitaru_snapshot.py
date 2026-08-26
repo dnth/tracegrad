@@ -18,6 +18,7 @@ from tracegrad.integrations.kitaru.snapshot import (
     kitaru_root,
     load_fingerprint,
     load_latest_pointer,
+    load_meta,
     load_source_drops,
     snapshot_exists,
     snapshot_key,
@@ -71,6 +72,7 @@ def _sample_meta(**overrides: object) -> SourceMeta:
     payload = dict(
         cohort_name="support-production",
         display_version="week-34",
+        version_number=1,
         traces_mapped=1,
         sessions_selected=2,
         evaluator_name="quality",
@@ -119,9 +121,27 @@ def test_snapshot_round_trips_and_is_reusable(tmp_path) -> None:
     assert pointer["cohort_name"] == "support-production"
     assert pointer["evaluation_name"] == "quality"
     assert pointer["display_version"] == "week-34"
+    stored_meta = load_meta(layout, snapshot_key("cv", "quality"))
+    assert stored_meta.version_number == 1
+    assert pointer["version_number"] == 1
     assert find_local_snapshot(
         layout, cohort_name="support-production", evaluation_name="quality"
     ) == snapshot_key("cv", "quality")
+    assert find_local_snapshot(
+        layout,
+        cohort_name="support-production",
+        evaluation_name="quality",
+        cohort_version="1",
+    ) == snapshot_key("cv", "quality")
+    assert (
+        find_local_snapshot(
+            layout,
+            cohort_name="support-production",
+            evaluation_name="quality",
+            cohort_version="2",
+        )
+        is None
+    )
 
 
 def test_source_and_batch_tables_are_not_merged() -> None:
@@ -227,10 +247,19 @@ def test_prepare_reuses_explicit_version_and_display_version(tmp_path) -> None:
         evaluation_name="quality",
         cohort_version="week-34",
     )
+    by_number = prepare_kitaru_source(
+        project_root=tmp_path,
+        manifest=_manifest(),
+        cohort_name="support-production",
+        evaluation_name="quality",
+        cohort_version="1",
+    )
     assert by_id.fingerprint.cohort_version_id == "cv"
     assert by_display.fingerprint.cohort_version_id == "cv"
+    assert by_number.fingerprint.cohort_version_id == "cv"
     assert by_id.refreshed is False
     assert by_display.refreshed is False
+    assert by_number.refreshed is False
 
 
 def test_prepare_refresh_fetches_even_when_latest_exists(tmp_path) -> None:
