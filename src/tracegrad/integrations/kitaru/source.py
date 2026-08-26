@@ -33,6 +33,7 @@ from .snapshot import (
     load_meta,
     load_source_drops,
     persist_run_source,
+    snapshot_identity_key,
     write_snapshot,
 )
 
@@ -150,6 +151,7 @@ async def _fetch_and_map(
 def _assembled_source(
     layout: StateLayout,
     *,
+    snapshot_id: str,
     fingerprint: SourceFingerprint,
     meta: SourceMeta,
     dropped: Sequence[SourceDrop],
@@ -177,7 +179,7 @@ def _assembled_source(
             "first-root input and last-root output"
         )
     return PreparedSource(
-        traces_path=batch_path(layout, fingerprint.cohort_version_id),
+        traces_path=batch_path(layout, snapshot_id),
         fingerprint=fingerprint,
         meta=meta,
         source_table=table,
@@ -220,6 +222,7 @@ def prepare_kitaru_source(
             dropped = load_source_drops(layout, local_id)
             return _assembled_source(
                 layout,
+                snapshot_id=local_id,
                 fingerprint=fingerprint,
                 meta=meta,
                 dropped=dropped,
@@ -251,6 +254,7 @@ def prepare_kitaru_source(
             )
             return _assembled_source(
                 layout,
+                snapshot_id=snapshot_identity_key(fingerprint),
                 fingerprint=fingerprint,
                 meta=meta,
                 dropped=dropped,
