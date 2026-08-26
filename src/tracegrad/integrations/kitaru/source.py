@@ -8,10 +8,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 from tracegrad.schema import Manifest, TemplateEngine
-from tracegrad.state import initialize
+from tracegrad.state import StateLayout, initialize
 
 from .accounting import format_source_table
 from .errors import KitaruSourceError
@@ -19,6 +19,7 @@ from .mapping import (
     REASON_AMBIGUOUS_EVALUATION,
     REASON_FORMAT_ENGINE_REFUSED,
     REASON_JUDGE_FINGERPRINT_CONFLICT,
+    SourceDrop,
     map_batch,
 )
 from .require import require_kitaru
@@ -27,12 +28,11 @@ from .snapshot import (
     SourceFingerprint,
     SourceMeta,
     batch_path,
-    fingerprints_compatible,
+    find_local_snapshot,
     load_fingerprint,
     load_meta,
     load_source_drops,
     persist_run_source,
-    snapshot_exists,
     write_snapshot,
 )
 
@@ -147,6 +147,44 @@ async def _fetch_and_map(
     return fingerprint, meta, mapping.mapped, mapping.dropped
 
 
+def _assembled_source(
+    layout: StateLayout,
+    *,
+    fingerprint: SourceFingerprint,
+    meta: SourceMeta,
+    dropped: Sequence[SourceDrop],
+    refreshed: bool,
+    manifest: Manifest,
+    evaluation_name: str,
+    run_id: str | None,
+) -> PreparedSource:
+    if meta.traces_mapped:
+        derived = judge_fingerprint_for(
+            meta.evaluator_name or evaluation_name,
+            fingerprint.evaluator_version,
+        )
+        check_judge_fingerprint(manifest, derived)
+    if run_id is not None:
+        persist_run_source(layout, run_id, fingerprint, meta)
+    table = format_source_table(
+        sessions_selected=meta.sessions_selected,
+        traces_mapped=meta.traces_mapped,
+        dropped=dropped,
+    )
+    if meta.multi_turn_count:
+        table += (
+            f"\n{meta.multi_turn_count} multi-turn session(s) collapsed to "
+            "first-root input and last-root output"
+        )
+    return PreparedSource(
+        traces_path=batch_path(layout, fingerprint.cohort_version_id),
+        fingerprint=fingerprint,
+        meta=meta,
+        source_table=table,
+        refreshed=refreshed,
+    )
+
+
 def prepare_kitaru_source(
     *,
     project_root: str | Path,
@@ -158,73 +196,68 @@ def prepare_kitaru_source(
     gateway: Any | None = None,
     run_id: str | None = None,
 ) -> PreparedSource:
-    """Resolve, snapshot, and return the JSONL path ingest already reads."""
+    """Resolve, snapshot, and return the JSONL path ingest already reads.
+
+    Re-runs read the local snapshot (including ``latest.json``) unless
+    ``--refresh``. The gateway is constructed only when a fetch is needed so
+    a pinned snapshot stays reproducible with the server unreachable
+    (ADR 0004 / issue #8).
+    """
 
     refuse_format_engine(manifest)
-    require_kitaru()
     layout = initialize(project_root)
 
-    from .client import KitaruGateway, run_async
+    if not refresh:
+        local_id = find_local_snapshot(
+            layout,
+            cohort_name=cohort_name,
+            evaluation_name=evaluation_name,
+            cohort_version=cohort_version,
+        )
+        if local_id is not None:
+            fingerprint = load_fingerprint(layout, local_id)
+            meta = load_meta(layout, local_id)
+            dropped = load_source_drops(layout, local_id)
+            return _assembled_source(
+                layout,
+                fingerprint=fingerprint,
+                meta=meta,
+                dropped=dropped,
+                refreshed=False,
+                manifest=manifest,
+                evaluation_name=evaluation_name,
+                run_id=run_id,
+            )
+
+    from .client import run_async
 
     owns = gateway is None
-    gateway = gateway or KitaruGateway()
+    if owns:
+        require_kitaru()
+        from .client import KitaruGateway
+
+        gateway = KitaruGateway()
 
     async def _run() -> PreparedSource:
         try:
             resolution = await gateway.resolve_cohort(cohort_name, cohort_version)
-            requested = {
-                "evaluation_name": evaluation_name,
-                "cohort_version_id": resolution.cohort_version_id,
-            }
-            reused = (
-                not refresh
-                and snapshot_exists(layout, resolution.cohort_version_id)
-                and fingerprints_compatible(
-                    load_fingerprint(layout, resolution.cohort_version_id), requested
-                )
+            fingerprint, meta, mapped, dropped = await _fetch_and_map(
+                gateway=gateway,
+                resolution=resolution,
+                evaluation_name=evaluation_name,
             )
-            if reused:
-                fingerprint = load_fingerprint(layout, resolution.cohort_version_id)
-                meta = load_meta(layout, resolution.cohort_version_id)
-                dropped = load_source_drops(layout, resolution.cohort_version_id)
-                refreshed = False
-            else:
-                fingerprint, meta, mapped, dropped = await _fetch_and_map(
-                    gateway=gateway,
-                    resolution=resolution,
-                    evaluation_name=evaluation_name,
-                )
-                write_snapshot(
-                    layout, fingerprint=fingerprint, meta=meta, mapped=mapped, dropped=dropped
-                )
-                refreshed = True
-
-            if meta.traces_mapped:
-                derived = judge_fingerprint_for(
-                    meta.evaluator_name or evaluation_name,
-                    fingerprint.evaluator_version,
-                )
-                check_judge_fingerprint(manifest, derived)
-
-            if run_id is not None:
-                persist_run_source(layout, run_id, fingerprint, meta)
-
-            table = format_source_table(
-                sessions_selected=meta.sessions_selected,
-                traces_mapped=meta.traces_mapped,
-                dropped=dropped if reused else dropped,
+            write_snapshot(
+                layout, fingerprint=fingerprint, meta=meta, mapped=mapped, dropped=dropped
             )
-            if meta.multi_turn_count:
-                table += (
-                    f"\n{meta.multi_turn_count} multi-turn session(s) collapsed to "
-                    "first-root input and last-root output"
-                )
-            return PreparedSource(
-                traces_path=batch_path(layout, fingerprint.cohort_version_id),
+            return _assembled_source(
+                layout,
                 fingerprint=fingerprint,
                 meta=meta,
-                source_table=table,
-                refreshed=refreshed,
+                dropped=dropped,
+                refreshed=True,
+                manifest=manifest,
+                evaluation_name=evaluation_name,
+                run_id=run_id,
             )
         finally:
             if owns:

@@ -73,19 +73,25 @@ def _evaluator_config(request: VerificationRequest) -> Any:
     )
 
 
-def is_tool_history_miss(error: str | None) -> bool:
-    if not error:
+def is_tool_history_miss(error: object | None) -> bool:
+    """Whether a replay error is a recorded-history miss (issue #9).
+
+    Kitaru adapters raise ``ToolPolicyMissError`` with
+    ``No history result for tool '…'``. Invented needles never match those
+    messages, so the miss would otherwise land in ``replay_failures`` instead
+    of ``TOOL_HISTORY_MISS`` / incomparable.
+    """
+
+    if error is None:
         return False
-    text = error.lower()
-    needles = (
-        "tool_history_miss",
-        "tool history miss",
-        "history miss",
-        "on_miss",
-        "no recorded call",
-        "recorded history",
-    )
-    return any(needle in text for needle in needles)
+    names = {type(error).__name__, type(error).__qualname__.rsplit(".", 1)[-1]}
+    if "ToolPolicyMissError" in names:
+        return True
+    text = str(error).strip()
+    if not text:
+        return False
+    lowered = text.lower()
+    return "no history result for tool" in lowered or "toolpolicymisserror" in lowered
 
 
 def mixed_agent_version_message(counts: dict[str, int]) -> str:

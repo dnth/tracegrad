@@ -189,9 +189,16 @@ def test_passthrough_is_rejected() -> None:
 
 
 def test_tool_history_miss_is_typed() -> None:
-    assert is_tool_history_miss("TOOL_HISTORY_MISS: search_account")
-    assert is_tool_history_miss("no recorded call matched under on_miss=fail")
+    assert is_tool_history_miss("No history result for tool 'search_account'")
+    assert is_tool_history_miss("ToolPolicyMissError: No history result for tool 'lookup'")
+
+    class ToolPolicyMissError(Exception):
+        pass
+
+    assert is_tool_history_miss(ToolPolicyMissError("No history result for tool 'x'"))
     assert not is_tool_history_miss("evaluator crashed")
+    assert not is_tool_history_miss("no recorded call matched under on_miss=fail")
+    assert not is_tool_history_miss("TOOL_HISTORY_MISS: search_account")
 
 
 def test_override_scope_divergence_on_non_root() -> None:
@@ -356,6 +363,56 @@ def test_hand_edit_after_verify_misses_the_gate(tmp_path: Path) -> None:
             candidate_prompt_hash=text_hash(written + "\n# hand edit\n"),
             force=False,
         )
+
+
+def test_apply_gate_requires_a_stored_result(tmp_path: Path) -> None:
+    """A submit that never stored result must not ungate apply."""
+
+    proposal = _proposal(tmp_path)
+    _source_sidecar(tmp_path)
+    written = candidate_prompt(PROMPT, proposal, [0])
+    digest = text_hash(written)
+
+    class SubmitOnlyBackend(FakeBackend):
+        def collect(
+            self, request: VerificationRequest, submitted: SubmittedVerification
+        ) -> VerificationResult:
+            raise RuntimeError("collect exploded")
+
+    request = _request(candidate_prompt=written, candidate_prompt_hash=digest)
+    with pytest.raises(RuntimeError, match="collect exploded"):
+        run_verification(tmp_path, request, SubmitOnlyBackend())
+    assert matching_verification(tmp_path, digest) is None
+    with pytest.raises(VerifyError, match="hash-matching"):
+        refuse_ungated_apply(
+            tmp_path, run_id="run-0001", candidate_prompt_hash=digest, force=False
+        )
+
+
+def test_apply_gate_accepts_a_finished_failed_report(tmp_path: Path) -> None:
+    """A finished REVIEW/FAILED report still allows apply; do not require completed."""
+
+    proposal = _proposal(tmp_path)
+    _source_sidecar(tmp_path)
+    written = candidate_prompt(PROMPT, proposal, [0])
+    digest = text_hash(written)
+
+    class FailedBackend(FakeBackend):
+        def collect(
+            self, request: VerificationRequest, submitted: SubmittedVerification
+        ) -> VerificationResult:
+            result = super().collect(request, submitted)
+            return result.model_copy(update={"status": "failed"})
+
+    request = _request(candidate_prompt=written, candidate_prompt_hash=digest)
+    run_verification(tmp_path, request, FailedBackend())
+    matched = matching_verification(tmp_path, digest)
+    assert matched is not None
+    assert matched.result is not None
+    assert matched.result.status == "failed"
+    refuse_ungated_apply(
+        tmp_path, run_id="run-0001", candidate_prompt_hash=digest, force=False
+    )
 
 
 def test_verification_id_is_path_safe() -> None:

@@ -171,11 +171,20 @@ def matching_verification(
     project_root: str | Path,
     candidate_prompt_hash: str,
 ) -> VerificationState | None:
-    """A persisted verification of exactly this candidate text, if any."""
+    """A persisted verification of exactly this candidate text, if any.
+
+    Requires a stored ``result``. A submit that never collected (``result``
+    is ``None``) must not ungate apply. A finished REVIEW/FAILED report
+    still matches; status is not required to be ``completed``.
+    """
 
     layout = initialize(project_root)
     for state in list_verification_states(layout):
-        if state.candidate_prompt_hash == candidate_prompt_hash and state.experiment_run_id:
+        if (
+            state.candidate_prompt_hash == candidate_prompt_hash
+            and state.experiment_run_id
+            and state.result is not None
+        ):
             return state
     return None
 

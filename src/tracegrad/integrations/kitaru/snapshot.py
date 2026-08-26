@@ -115,6 +115,9 @@ def write_snapshot(
         {
             "cohort_version_id": fingerprint.cohort_version_id,
             "batch": str(target / BATCH_FILENAME),
+            "cohort_name": meta.cohort_name,
+            "evaluation_name": fingerprint.evaluation_name,
+            "display_version": meta.display_version,
         },
     )
     return target
@@ -190,4 +193,111 @@ def fingerprints_compatible(stored: SourceFingerprint, requested: Mapping[str, A
         return False
     if stored.evaluation_name != requested.get("evaluation_name"):
         return False
-    return str(stored.cohort_version_id) == str(requested.get("cohort_version_id"))
+    requested_id = requested.get("cohort_version_id")
+    if requested_id is not None and str(stored.cohort_version_id) != str(requested_id):
+        return False
+    return True
+
+
+def load_latest_pointer(layout: StateLayout) -> dict[str, Any] | None:
+    """Read ``latest.json`` if a previous source write left one."""
+
+    path = kitaru_root(layout) / LATEST_POINTER
+    if not path.is_file():
+        return None
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(raw, dict):
+        return None
+    return raw
+
+
+def list_snapshot_ids(layout: StateLayout) -> list[str]:
+    root = kitaru_root(layout)
+    if not root.is_dir():
+        return []
+    return [
+        child.name
+        for child in sorted(root.iterdir())
+        if child.is_dir() and snapshot_exists(layout, child.name)
+    ]
+
+
+def snapshot_matches_request(
+    layout: StateLayout,
+    cohort_version_id: str,
+    *,
+    cohort_name: str,
+    evaluation_name: str,
+    cohort_version: str | None = None,
+) -> bool:
+    """Whether this on-disk snapshot is the one the request asked for."""
+
+    if not snapshot_exists(layout, cohort_version_id):
+        return False
+    fingerprint = load_fingerprint(layout, cohort_version_id)
+    if not fingerprints_compatible(fingerprint, {"evaluation_name": evaluation_name}):
+        return False
+    meta = load_meta(layout, cohort_version_id)
+    if meta.cohort_name != cohort_name:
+        return False
+    if cohort_version is None:
+        return True
+    return cohort_version_id == cohort_version or meta.display_version == cohort_version
+
+
+def find_local_snapshot(
+    layout: StateLayout,
+    *,
+    cohort_name: str,
+    evaluation_name: str,
+    cohort_version: str | None = None,
+) -> str | None:
+    """Return a local ``cohort_version_id`` that satisfies this request.
+
+    Prefers ``latest.json`` when it matches so a re-run keeps the pinned
+    version even if the server's latest has moved. Does not contact the
+    server. ``--refresh`` is the caller's decision not to call this.
+    """
+
+    if cohort_version is not None:
+        if snapshot_matches_request(
+            layout,
+            cohort_version,
+            cohort_name=cohort_name,
+            evaluation_name=evaluation_name,
+            cohort_version=cohort_version,
+        ):
+            return cohort_version
+        for snapshot_id in list_snapshot_ids(layout):
+            if snapshot_matches_request(
+                layout,
+                snapshot_id,
+                cohort_name=cohort_name,
+                evaluation_name=evaluation_name,
+                cohort_version=cohort_version,
+            ):
+                return snapshot_id
+        return None
+
+    pointer = load_latest_pointer(layout)
+    if pointer is not None:
+        latest_id = str(pointer.get("cohort_version_id") or "")
+        if latest_id and snapshot_matches_request(
+            layout,
+            latest_id,
+            cohort_name=cohort_name,
+            evaluation_name=evaluation_name,
+        ):
+            return latest_id
+    for snapshot_id in list_snapshot_ids(layout):
+        if snapshot_matches_request(
+            layout,
+            snapshot_id,
+            cohort_name=cohort_name,
+            evaluation_name=evaluation_name,
+        ):
+            return snapshot_id
+    return None
