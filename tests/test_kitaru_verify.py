@@ -30,6 +30,7 @@ from tracegrad.integrations.kitaru.backend import (
     mixed_agent_version_message,
 )
 from tracegrad.integrations.kitaru.client import FETCH_JOBS
+from tracegrad.integrations.kitaru.errors import KitaruVerifyError
 from tracegrad.integrations.kitaru.policy import (
     RECORDED_HISTORY_POLICY,
     asserts_no_passthrough,
@@ -769,8 +770,14 @@ def test_collect_fetch_error_does_not_persist_result_or_ungate_apply(tmp_path: P
                 request, submitted
             )
 
-    with pytest.raises(TimeoutError, match="404/timeout"):
+    with pytest.raises(KitaruVerifyError, match="collect aborted") as caught:
         run_verification(tmp_path, request, FetchErrorBackend())
+    message = str(caught.value)
+    assert "Apply stays gated" in message
+    assert "Resume redoes collect" in message
+    assert "--force" in message
+    assert "TimeoutError" in message
+    assert caught.value.__cause__ is not None
 
     assert matching_verification(tmp_path, digest) is None
     state = load_verification_state(

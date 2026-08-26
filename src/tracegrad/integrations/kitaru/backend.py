@@ -492,7 +492,16 @@ async def _fetch_replay_payloads(
             return baseline_nodes, result_nodes, baseline_evals, candidate_evals
 
     # Fail-closed: gather raises on the first fetch error (no return_exceptions).
-    return list(await asyncio.gather(*(one(replay) for replay in replays)))
+    try:
+        return list(await asyncio.gather(*(one(replay) for replay in replays)))
+    except KitaruVerifyError:
+        raise
+    except Exception as exc:
+        raise KitaruVerifyError(
+            "collect aborted: fetching a replay payload failed "
+            f"({type(exc).__name__}: {exc}). Apply stays gated. Resume redoes "
+            "collect. Pass --force on apply if you must write anyway."
+        ) from exc
 
 
 def _maybe_float(value: Any) -> float | None:
