@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import os
 from pathlib import Path
 from types import SimpleNamespace
@@ -682,3 +683,92 @@ def test_source_sdk_errors_are_kitaru_source_errors(tmp_path) -> None:
         prepare_kitaru_source(**kwargs, gateway=ListBoom())
     with pytest.raises(KitaruSourceError, match="looking up the evaluator"):
         prepare_kitaru_source(**kwargs, gateway=EvaluatorBoom())
+
+
+def test_wait_for_experiment_run_polls_get_not_a_missing_client_method(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """kitaru 0.22's API client has experiment_runs.get, not wait_for_experiment_run."""
+
+    pytest.importorskip("kitaru")
+    from importlib.metadata import version
+
+    from kitaru.client.api_client import KitaruAPIClient
+    from kitaru.client.client import KitaruClient
+    from kitaru.client.resources.experiment_runs import ExperimentRunsResource
+
+    assert version("kitaru").startswith("0.22")
+    assert hasattr(ExperimentRunsResource, "get")
+    assert not hasattr(KitaruAPIClient, "wait_for_experiment_run")
+    # Wrapping KitaruClient would close the shared API client on close().
+    assert "self._api_client.close" in inspect.getsource(KitaruClient.close)
+
+    slept: list[float] = []
+
+    async def fake_sleep(delay: float) -> None:
+        slept.append(delay)
+
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+
+    class ExperimentRuns:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def get(self, experiment_run_id: object) -> SimpleNamespace:
+            self.calls += 1
+            status = "running" if self.calls < 2 else "completed"
+            return SimpleNamespace(id=experiment_run_id, status=status)
+
+    class ApiClient:
+        def __init__(self) -> None:
+            self.experiment_runs = ExperimentRuns()
+            self.closed = False
+
+        async def close(self) -> None:
+            self.closed = True
+
+    api = ApiClient()
+    assert not hasattr(api, "wait_for_experiment_run")
+    run = asyncio.run(
+        KitaruGateway(client=api).wait_for_experiment_run(
+            "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        )
+    )
+    assert run.status == "completed"
+    assert api.experiment_runs.calls == 2
+    assert api.closed is False
+    assert slept == [2.0]
+
+
+@pytest.mark.parametrize("status", ["failed", "canceled"])
+def test_wait_for_experiment_run_returns_terminal_status(status: str) -> None:
+    pytest.importorskip("kitaru")
+
+    class ExperimentRuns:
+        async def get(self, experiment_run_id: object) -> SimpleNamespace:
+            return SimpleNamespace(id=experiment_run_id, status=status)
+
+    api = SimpleNamespace(experiment_runs=ExperimentRuns())
+    run = asyncio.run(
+        KitaruGateway(client=api).wait_for_experiment_run(
+            "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        )
+    )
+    assert run.status == status
+
+
+def test_wait_for_experiment_run_timeout_is_fail_closed() -> None:
+    pytest.importorskip("kitaru")
+
+    class ExperimentRuns:
+        async def get(self, experiment_run_id: object) -> SimpleNamespace:
+            return SimpleNamespace(id=experiment_run_id, status="running")
+
+    api = SimpleNamespace(experiment_runs=ExperimentRuns())
+    with pytest.raises(TimeoutError, match="Timed out waiting for experiment run"):
+        asyncio.run(
+            KitaruGateway(client=api).wait_for_experiment_run(
+                "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                timeout=0.01,
+            )
+        )

@@ -7,6 +7,7 @@ from Kitaru's own config; tracegrad stores no secrets.
 from __future__ import annotations
 
 import asyncio
+import time
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -16,6 +17,8 @@ from .errors import KitaruSourceError, KitaruVerifyError
 from .require import require_kitaru
 
 FETCH_JOBS = 8
+_EXPERIMENT_RUN_POLL_INTERVAL = 2.0
+_TERMINAL_EXPERIMENT_RUN_STATUSES = frozenset({"completed", "failed", "canceled"})
 
 
 @dataclass(frozen=True)
@@ -244,10 +247,51 @@ class KitaruGateway:
         return await self._client.experiment_runs.get(_uuid(run_id))
 
     async def wait_for_experiment_run(self, run_id: str, timeout: float | None = None) -> Any:
-        from kitaru.client.client import KitaruClient
+        """Poll ``experiment_runs.get`` until completed, failed, or canceled.
 
-        wrapper = KitaruClient(api_client=self._client)
-        return await wrapper.wait_for_experiment_run(_uuid(run_id), timeout=timeout)
+        Same loop as kitaru CLI ``poll_run``. Do not wrap ``KitaruClient``:
+        its ``close()`` shuts the shared API client, and wait is not a method
+        on the 0.22 API client (close / context-manager only).
+        """
+
+        run_uuid = _uuid(run_id)
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while True:
+            if deadline is None:
+                run = await self._client.experiment_runs.get(run_uuid)
+            else:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError(f"Timed out waiting for experiment run {run_id}")
+                try:
+                    run = await asyncio.wait_for(
+                        self._client.experiment_runs.get(run_uuid),
+                        timeout=remaining,
+                    )
+                except TimeoutError as exc:
+                    raise TimeoutError(
+                        f"Timed out waiting for experiment run {run_id}"
+                    ) from exc
+
+            status = getattr(run, "status", None)
+            if str(getattr(status, "value", status) or "") in _TERMINAL_EXPERIMENT_RUN_STATUSES:
+                return run
+
+            if deadline is None:
+                await asyncio.sleep(_EXPERIMENT_RUN_POLL_INTERVAL)
+                continue
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(f"Timed out waiting for experiment run {run_id}")
+            try:
+                await asyncio.wait_for(
+                    asyncio.sleep(min(_EXPERIMENT_RUN_POLL_INTERVAL, remaining)),
+                    timeout=remaining,
+                )
+            except TimeoutError as exc:
+                raise TimeoutError(
+                    f"Timed out waiting for experiment run {run_id}"
+                ) from exc
 
     async def list_replays(self, experiment_run_id: str) -> list[Any]:
         from kitaru.api_models.v1.filter import FilterCondition, FilterOp
