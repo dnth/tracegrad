@@ -64,6 +64,7 @@ from tracegrad.verify import (
     refuse_ungated_apply,
     run_verification,
     verification_id_for,
+    verification_path,
 )
 
 PROMPT = "Rules:\n- Be concise.\n- Cite the doc.\n"
@@ -642,6 +643,40 @@ def test_interrupted_verify_does_not_duplicate_the_experiment(tmp_path: Path) ->
             cohort_version_id=request.cohort_version_id,
         )
         is not None
+    )
+
+
+def test_corrupt_verification_state_is_treated_as_missing_and_stays_gated(
+    tmp_path: Path,
+) -> None:
+    proposal = _proposal(tmp_path)
+    _source_sidecar(tmp_path)
+    written = candidate_prompt(PROMPT, proposal, [0])
+    digest = text_hash(written)
+    request = _request(candidate_prompt=written, candidate_prompt_hash=digest)
+    run_verification(tmp_path, request, FakeBackend())
+    refuse_ungated_apply(
+        tmp_path, run_id="run-0001", candidate_prompt_hash=digest, force=False
+    )
+
+    layout = initialize(tmp_path)
+    vid = verification_id_for("run-0001", digest)
+    path = verification_path(layout, vid)
+
+    for payload in ("not-json", "{}"):
+        path.write_text(payload, encoding="utf-8")
+        assert load_verification_state(layout, vid) is None
+        assert matching_verification(tmp_path, digest, cohort_version_id="cv1") is None
+        with pytest.raises(VerifyError, match="hash-matching"):
+            refuse_ungated_apply(
+                tmp_path, run_id="run-0001", candidate_prompt_hash=digest, force=False
+            )
+
+    backend = FakeBackend()
+    run_verification(tmp_path, request, backend)
+    assert backend.submitted == 1
+    refuse_ungated_apply(
+        tmp_path, run_id="run-0001", candidate_prompt_hash=digest, force=False
     )
 
 

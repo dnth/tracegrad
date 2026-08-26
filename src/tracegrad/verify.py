@@ -170,10 +170,20 @@ def save_verification_state(layout: StateLayout, state: VerificationState) -> Pa
 
 
 def load_verification_state(layout: StateLayout, verification_id: str) -> VerificationState | None:
+    """Read one verification record, or None if it is missing or unreadable.
+
+    Corrupt ``state.json`` (including pydantic ``ValidationError``) is treated
+    as missing so ``run_verification`` can resubmit. Apply stays gated:
+    ``list_verification_states`` already skips those files.
+    """
+
     target = verification_path(layout, verification_id)
     if not target.exists():
         return None
-    return VerificationState.model_validate_json(target.read_text(encoding="utf-8"))
+    try:
+        return VerificationState.model_validate_json(target.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
 
 
 def list_verification_states(layout: StateLayout) -> list[VerificationState]:
