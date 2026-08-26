@@ -470,6 +470,9 @@ async def _fetch_replay_payloads(
 
     One replay occupies one semaphore slot, matching ``KitaruGateway.fetch_records``.
     The four HTTP calls for that replay run concurrently inside the slot.
+
+    Fail-closed: one 404/timeout aborts the whole collect. Do not isolate as
+    ReplayFailure, persist a result, or ungate apply. Resume redoes collect.
     """
 
     if not replays:
@@ -488,6 +491,7 @@ async def _fetch_replay_payloads(
             )
             return baseline_nodes, result_nodes, baseline_evals, candidate_evals
 
+    # Fail-closed: gather raises on the first fetch error (no return_exceptions).
     return list(await asyncio.gather(*(one(replay) for replay in replays)))
 
 

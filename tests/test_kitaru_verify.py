@@ -57,6 +57,7 @@ from tracegrad.verify import (
     build_request,
     format_verification_report,
     load_run_source_payload,
+    load_verification_state,
     matching_verification,
     refuse_ungated_apply,
     run_verification,
@@ -678,6 +679,106 @@ def test_apply_gate_requires_a_stored_result(tmp_path: Path) -> None:
     with pytest.raises(RuntimeError, match="collect exploded"):
         run_verification(tmp_path, request, SubmitOnlyBackend())
     assert matching_verification(tmp_path, digest) is None
+    with pytest.raises(VerifyError, match="hash-matching"):
+        refuse_ungated_apply(
+            tmp_path, run_id="run-0001", candidate_prompt_hash=digest, force=False
+        )
+
+
+def test_collect_fetch_error_does_not_persist_result_or_ungate_apply(tmp_path: Path) -> None:
+    """A session_nodes/evaluations 404 or timeout aborts collect fail-closed."""
+
+    proposal = _proposal(tmp_path)
+    _source_sidecar(tmp_path)
+    written = candidate_prompt(PROMPT, proposal, [0])
+    digest = text_hash(written)
+    request = _request(candidate_prompt=written, candidate_prompt_hash=digest)
+
+    def _root(system: str) -> SimpleNamespace:
+        return SimpleNamespace(
+            index=0,
+            parent_index=None,
+            secondary_parent_indexes=[],
+            node_type="llm_call",
+            inputs={"system": system},
+            system_prompt_selector="/system",
+        )
+
+    class FetchErrorGateway:
+        async def wait_for_experiment_run(
+            self, run_id: str, timeout: float | None = None
+        ) -> object:
+            return SimpleNamespace(status="completed")
+
+        async def list_replays(self, experiment_run_id: str) -> list[object]:
+            return [
+                SimpleNamespace(
+                    baseline_session_id="s0",
+                    result_session_id="r0",
+                    status="completed",
+                    error=None,
+                ),
+                SimpleNamespace(
+                    baseline_session_id="s1",
+                    result_session_id="r1",
+                    status="completed",
+                    error=None,
+                ),
+            ]
+
+        async def session_nodes(self, session_id: str) -> tuple[object, ...]:
+            system = CANDIDATE if session_id.startswith("r") else PROMPT
+            return (_root(system),)
+
+        async def evaluations_for(self, session_id: str) -> list[object]:
+            if session_id == "r1":
+                raise TimeoutError("404/timeout fetching evaluations for r1")
+            passed = session_id.startswith("r")
+            return [
+                SimpleNamespace(
+                    name="quality",
+                    evaluator_version=3,
+                    passed=passed,
+                    score=0.9 if passed else 0.2,
+                    id=session_id,
+                )
+            ]
+
+        async def evaluation_aggregates(self, experiment_run_id: str) -> list[object]:
+            return [
+                {
+                    "name": "quality",
+                    "baseline": {"count": 2, "mean": 0.2, "pass_rate": 0.0},
+                    "result": {"count": 2, "mean": 0.9, "pass_rate": 1.0},
+                }
+            ]
+
+    class FetchErrorBackend:
+        name = "kitaru"
+
+        def preflight(self, request: VerificationRequest) -> None:
+            return None
+
+        def submit(self, request: VerificationRequest) -> SubmittedVerification:
+            return SubmittedVerification(experiment_id="exp-1", experiment_run_id="erun-1")
+
+        def collect(
+            self, request: VerificationRequest, submitted: SubmittedVerification
+        ) -> VerificationResult:
+            return KitaruVerificationBackend(gateway=FetchErrorGateway()).collect(
+                request, submitted
+            )
+
+    with pytest.raises(TimeoutError, match="404/timeout"):
+        run_verification(tmp_path, request, FetchErrorBackend())
+
+    assert matching_verification(tmp_path, digest) is None
+    state = load_verification_state(
+        initialize(tmp_path), verification_id_for("run-0001", digest)
+    )
+    assert state is not None
+    assert state.experiment_run_id == "erun-1"
+    assert state.result is None
     with pytest.raises(VerifyError, match="hash-matching"):
         refuse_ungated_apply(
             tmp_path, run_id="run-0001", candidate_prompt_hash=digest, force=False
