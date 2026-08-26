@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -12,6 +13,8 @@ import pytest
 from tracegrad.apply import (
     Proposal,
     ProposedEdit,
+    StaleProposalError,
+    applied_history,
     apply_proposal,
     candidate_prompt,
     save_proposal,
@@ -48,7 +51,9 @@ from tracegrad.verify import (
     VerificationRequest,
     VerificationResult,
     VerifyError,
+    build_request,
     format_verification_report,
+    load_run_source_payload,
     matching_verification,
     refuse_ungated_apply,
     run_verification,
@@ -586,6 +591,58 @@ def test_verification_id_is_path_safe() -> None:
     vid = verification_id_for("run-0001", "sha256:abcdef1234567890")
     assert vid.startswith("verify-run-0001-")
     assert "/" not in vid
+
+
+def test_build_request_refuses_a_stale_proposal_without_submitting(tmp_path: Path) -> None:
+    proposal = _proposal(tmp_path)
+    _source_sidecar(tmp_path)
+    source = load_run_source_payload(tmp_path, "run-0001")
+    assert source is not None
+    (tmp_path / "prompt.md").write_text(PROMPT + "- Edited by hand.\n", encoding="utf-8")
+    backend = FakeBackend()
+    with pytest.raises(StaleProposalError, match="stale"):
+        build_request(
+            project_root=tmp_path,
+            run_id="run-0001",
+            proposal=proposal,
+            base_directory=tmp_path,
+            source=source,
+        )
+    assert backend.submitted == 0
+    assert backend.preflighted == 0
+    layout = initialize(tmp_path)
+    assert list(layout.verification.glob("*")) == []
+
+
+def test_verify_cli_refuses_a_stale_proposal_before_kitaru(tmp_path: Path) -> None:
+    from tracegrad import cli
+
+    _proposal(tmp_path)
+    _source_sidecar(tmp_path)
+    (tmp_path / "prompt.md").write_text(PROMPT + "- Edited by hand.\n", encoding="utf-8")
+    stream = io.StringIO()
+    code = cli.main(
+        [
+            "verify",
+            "--backend",
+            "kitaru",
+            "--run",
+            "run-0001",
+            "--project-root",
+            str(tmp_path),
+            "--base-directory",
+            str(tmp_path),
+        ],
+        out=stream,
+    )
+    assert code == 1
+    output = stream.getvalue()
+    assert "stale" in output
+    assert "re-run tracegrad" in output
+    assert "prompt.md changed since run run-0001" in output
+    layout = initialize(tmp_path)
+    assert list(layout.verification.glob("*")) == []
+    assert any(record.get("event") == "stale" for record in applied_history(tmp_path))
 
 
 def test_report_lists_replay_failures_next_to_divergence() -> None:

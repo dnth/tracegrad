@@ -458,6 +458,14 @@ def command_verify(args: argparse.Namespace, out: TextIO) -> int:
             "verify reuses the cohort the originating --source kitaru run persisted."
         )
     proposal = load_proposal(args.project_root, run_id)
+    if is_stale(proposal, base_directory=args.base_directory):
+        mark_stale(args.project_root, run_id)
+        print(
+            f"{proposal.template_file} changed since run {run_id}; "
+            "the proposal is stale — re-run tracegrad",
+            file=out,
+        )
+        return 1
     request = build_request(
         project_root=args.project_root,
         run_id=run_id,

@@ -15,7 +15,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic.types import StrictFloat, StrictInt, StrictStr
 
-from .apply import Proposal, candidate_prompt, load_proposal
+from .apply import Proposal, StaleProposalError, candidate_prompt, is_stale, load_proposal
 from .canonical import content_hash, text_hash
 from .ports import VerificationBackend
 from .state import (
@@ -247,6 +247,11 @@ def build_request(
     base_directory: str | Path = ".",
     source: dict[str, Any],
 ) -> VerificationRequest:
+    if is_stale(proposal, base_directory=base_directory):
+        raise StaleProposalError(
+            f"{proposal.template_file} changed since run {run_id}; "
+            "the proposal is stale — re-run tracegrad"
+        )
     template = contained_path(base_directory, proposal.template_file)
     current = template.read_text(encoding="utf-8")
     candidate = candidate_prompt(
