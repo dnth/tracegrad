@@ -218,8 +218,6 @@ def classify_scores(
     base_score = map_score(baseline)
     cand_score = map_score(candidate)
     if isinstance(base_score, str) or isinstance(cand_score, str):
-        if isinstance(base_passed, bool) and isinstance(cand_passed, bool):
-            return "unchanged"
         return None
     if cand_score > base_score:
         return "improved"

@@ -542,6 +542,21 @@ def test_unclassified_scores_are_score_unclassified() -> None:
     assert outcome.kind == DIVERGENCE_SCORE
     assert outcome.kind == "SCORE_UNCLASSIFIED"
 
+    # map_score drop-reason with bool passed flags is incomparable, not unchanged.
+    out_of_range = _eval(score=1.5, passed=True)
+    assert classify_scores(out_of_range, out_of_range) is None
+    mixed = classify_replay_session(
+        session_id="s-range",
+        number=8,
+        baseline_eval=out_of_range,
+        candidate_eval=_eval(score=0.9, passed=True),
+        requested_evaluator_version=3,
+    )
+    assert isinstance(mixed, Divergence)
+    assert mixed.kind == "SCORE_UNCLASSIFIED"
+    # Pass-flip still classifies before the unreadable score.
+    assert classify_scores(_eval(score=1.5, passed=False), _eval(score=1.5, passed=True)) == "improved"
+
 
 def test_replay_session_still_classifies_comparable_scores() -> None:
     outcome = classify_replay_session(
