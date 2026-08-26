@@ -284,8 +284,8 @@ def candidate_prompt(
 ) -> str:
     """The text that would be written if these indices were accepted.
 
-    Used by verify (the full proposal) and the apply gate (the selection
-    about to be written) so both hash the same way.
+    Used by verify, the apply gate, and apply_proposal so the ADR 0009 hash
+    gate hashes the same bytes that are written.
     """
 
     selected = sorted({index for index in accepted_indices})
@@ -329,28 +329,15 @@ def apply_proposal(
         )
 
     selected = sorted({index for index in accepted_indices})
-    for index in selected:
-        if index < 0 or index >= len(proposal.edits):
-            raise ApplyError(f"no such edit index: {index}")
-
+    # ADR 0009's hash gate is only sound if apply writes the same bytes verify
+    # hashed. candidate_prompt is that shared path.
+    updated = candidate_prompt(current, proposal, selected)
+    selected_set = set(selected)
     accepted = [proposal.edits[index].edit for index in selected]
     rejected = [
-        item.edit for index, item in enumerate(proposal.edits) if index not in set(selected)
+        item.edit for index, item in enumerate(proposal.edits) if index not in selected_set
     ]
 
-    if not accepted:
-        return ApplyResult(
-            template_file=template,
-            applied_prompt_hash=text_hash(current),
-            accepted=(),
-            rejected=tuple(rejected),
-            snapshot=None,
-            unchanged=True,
-        )
-
-    inventory = build_inventory(current)
-    resolution = resolve_edits(inventory, accepted)
-    updated = apply_resolved(current, resolution.resolved)
     if updated == current:
         return ApplyResult(
             template_file=template,
@@ -359,7 +346,6 @@ def apply_proposal(
             rejected=tuple(rejected),
             snapshot=None,
             unchanged=True,
-            resolution_rejections=tuple(item.reason for item in resolution.rejected),
         )
 
     snapshot = snapshot_template(project_root, proposal.run_id, template)
@@ -387,7 +373,6 @@ def apply_proposal(
         accepted=tuple(accepted),
         rejected=tuple(rejected),
         snapshot=snapshot,
-        resolution_rejections=tuple(item.reason for item in resolution.rejected),
     )
 
 

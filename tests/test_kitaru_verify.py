@@ -22,12 +22,14 @@ from tracegrad.apply import (
 from tracegrad.canonical import text_hash
 from tracegrad.edits import resolve_edits
 from tracegrad.integrations.kitaru.backend import (
+    KitaruVerificationBackend,
     assert_override_scope,
     classify_replay_session,
     classify_scores,
     is_tool_history_miss,
     mixed_agent_version_message,
 )
+from tracegrad.integrations.kitaru.client import FETCH_JOBS
 from tracegrad.integrations.kitaru.policy import (
     RECORDED_HISTORY_POLICY,
     asserts_no_passthrough,
@@ -43,6 +45,7 @@ from tracegrad.schema import Edit
 from tracegrad.state import atomic_write_json, initialize
 from tracegrad.verify import (
     DIVERGENCE_EVALUATOR_VERSION,
+    DIVERGENCE_HISTORY,
     DIVERGENCE_SCORE,
     DIVERGENCE_SELECT,
     Divergence,
@@ -741,3 +744,120 @@ def test_second_run_async_does_not_reuse_a_closed_loop_client(monkeypatch: pytes
     assert created[0] is not created[1]
     assert created[0]._closed is True
     assert created[1]._closed is True
+
+
+def test_collect_fetches_replay_payloads_with_bounded_concurrency() -> None:
+    n_success = FETCH_JOBS + 4
+    fetched: list[str] = []
+
+    class CountingGateway:
+        def __init__(self) -> None:
+            self.http_in_flight = 0
+            self.max_http_in_flight = 0
+            self._replay_counts: dict[str, int] = {}
+            self.max_replay_in_flight = 0
+            self._lock = asyncio.Lock()
+
+        def _replay_key(self, session_id: str) -> str:
+            if session_id.startswith("r") and session_id[1:].isdigit():
+                return f"s{session_id[1:]}"
+            return session_id
+
+        async def _track(self, session_id: str) -> None:
+            if session_id in {"fail-session", "hist-session"}:
+                raise AssertionError(f"failed replay {session_id} must not be fetched")
+            key = self._replay_key(session_id)
+            async with self._lock:
+                self.http_in_flight += 1
+                self.max_http_in_flight = max(self.max_http_in_flight, self.http_in_flight)
+                self._replay_counts[key] = self._replay_counts.get(key, 0) + 1
+                self.max_replay_in_flight = max(
+                    self.max_replay_in_flight, len(self._replay_counts)
+                )
+                fetched.append(session_id)
+            try:
+                await asyncio.sleep(0.05)
+            finally:
+                async with self._lock:
+                    self.http_in_flight -= 1
+                    self._replay_counts[key] -= 1
+                    if self._replay_counts[key] == 0:
+                        del self._replay_counts[key]
+
+        async def wait_for_experiment_run(
+            self, run_id: str, timeout: float | None = None
+        ) -> object:
+            return SimpleNamespace(status="completed")
+
+        async def list_replays(self, experiment_run_id: str) -> list[object]:
+            rows: list[object] = [
+                SimpleNamespace(
+                    baseline_session_id="fail-session",
+                    result_session_id=None,
+                    status="failed",
+                    error="worker crashed",
+                ),
+                SimpleNamespace(
+                    baseline_session_id="hist-session",
+                    result_session_id=None,
+                    status="failed",
+                    error="No history result for tool 'search'",
+                ),
+            ]
+            for index in range(n_success):
+                rows.append(
+                    SimpleNamespace(
+                        baseline_session_id=f"s{index}",
+                        result_session_id=f"r{index}",
+                        status="completed",
+                        error=None,
+                    )
+                )
+            return rows
+
+        async def session_nodes(self, session_id: str) -> tuple[object, ...]:
+            await self._track(session_id)
+            return ()
+
+        async def evaluations_for(self, session_id: str) -> list[object]:
+            await self._track(session_id)
+            passed = session_id.startswith("r")
+            return [
+                SimpleNamespace(
+                    name="quality",
+                    evaluator_version=3,
+                    passed=passed,
+                    score=0.9 if passed else 0.2,
+                    id=session_id,
+                )
+            ]
+
+        async def evaluation_aggregates(self, experiment_run_id: str) -> list[object]:
+            return [
+                {
+                    "name": "quality",
+                    "baseline": {"count": n_success, "mean": 0.2, "pass_rate": 0.0},
+                    "result": {"count": n_success, "mean": 0.9, "pass_rate": 1.0},
+                }
+            ]
+
+    gateway = CountingGateway()
+    backend = KitaruVerificationBackend(gateway=gateway)
+    request = _request(session_numbers={f"s{index}": index for index in range(n_success)})
+    result = backend.collect(
+        request, SubmittedVerification(experiment_id="exp-1", experiment_run_id="erun-1")
+    )
+
+    assert gateway.max_replay_in_flight > 1
+    assert gateway.max_replay_in_flight <= FETCH_JOBS
+    assert gateway.max_http_in_flight > 1
+    assert result.improved_sessions == [f"s{index}" for index in range(n_success)]
+    assert result.replay_failures == [
+        ReplayFailure(session_id="fail-session", error="worker crashed", number=None)
+    ]
+    assert result.diverged_sessions[0].kind == DIVERGENCE_HISTORY
+    assert result.diverged_sessions[0].session_id == "hist-session"
+    assert "fail-session" not in fetched
+    assert "hist-session" not in fetched
+    assert result.baseline_count == n_success
+    assert result.candidate_count == n_success

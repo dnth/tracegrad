@@ -15,6 +15,8 @@ from typing import Any
 from .errors import KitaruSourceError, KitaruVerifyError
 from .require import require_kitaru
 
+FETCH_JOBS = 8
+
 
 @dataclass(frozen=True)
 class CohortResolution:
@@ -188,7 +190,7 @@ class KitaruGateway:
         return [item async for item in self._client.evaluations.iter(params)]
 
     async def fetch_records(
-        self, sessions: Sequence[Any], *, jobs: int = 8
+        self, sessions: Sequence[Any], *, jobs: int = FETCH_JOBS
     ) -> list[tuple[Any, tuple[Any, ...], tuple[Any, ...]]]:
         semaphore = asyncio.Semaphore(max(1, jobs))
 

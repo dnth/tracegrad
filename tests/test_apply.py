@@ -10,6 +10,7 @@ from tracegrad.apply import (
     applied_history,
     apply_proposal,
     build_proposal,
+    candidate_prompt,
     current_baseline,
     is_stale,
     latest_run_id,
@@ -149,6 +150,21 @@ def test_proposal_round_trips_through_disk(tmp_path: Path) -> None:
 def test_loading_an_unknown_run_is_an_apply_error(tmp_path: Path) -> None:
     with pytest.raises(ApplyError):
         load_proposal(tmp_path, "run-9999")
+
+
+def test_apply_proposal_writes_the_same_text_as_candidate_prompt(tmp_path: Path) -> None:
+    template = _template(tmp_path)
+    outcome, _ = _outcome()
+    proposal = build_proposal(
+        run_id="run-0001", template_file="prompt.md", prompt=PROMPT, outcome=outcome
+    )
+    expected = candidate_prompt(PROMPT, proposal, [0])
+
+    result = apply_proposal(tmp_path, proposal, [0], base_directory=tmp_path)
+
+    assert template.read_text(encoding="utf-8") == expected
+    assert result.applied_prompt_hash == text_hash(expected)
+    assert result.unchanged is False
 
 
 def test_apply_writes_the_template_and_records_the_baseline(tmp_path: Path) -> None:

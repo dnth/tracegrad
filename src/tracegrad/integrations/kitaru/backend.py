@@ -6,7 +6,9 @@ never imports Kitaru.
 
 from __future__ import annotations
 
+import asyncio
 import uuid
+from collections.abc import Sequence
 from typing import Any
 
 from tracegrad.verify import (
@@ -23,7 +25,7 @@ from tracegrad.verify import (
     verification_fingerprint_for,
 )
 
-from .client import KitaruGateway, run_async, worker_covers_agent_version
+from .client import FETCH_JOBS, KitaruGateway, run_async, worker_covers_agent_version
 from .errors import KitaruVerifyError
 from .graph import index_nodes, is_root_llm_node, llm_nodes, node_index
 from .mapping import extract_system_prompt
@@ -344,6 +346,7 @@ class KitaruVerificationBackend:
         unchanged: list[str] = []
         diverged: list[Divergence] = []
         failures: list[ReplayFailure] = []
+        fetch_targets: list[Any] = []
 
         for replay in replays:
             session_id = str(replay.baseline_session_id)
@@ -377,8 +380,13 @@ class KitaruVerificationBackend:
                     ReplayFailure(session_id=session_id, error="missing result session", number=number)
                 )
                 continue
-            baseline_nodes = await gateway.session_nodes(str(replay.baseline_session_id))
-            result_nodes = await gateway.session_nodes(str(result_id))
+            fetch_targets.append(replay)
+
+        payloads = await _fetch_replay_payloads(gateway, fetch_targets)
+        for replay, payload in zip(fetch_targets, payloads, strict=True):
+            session_id = str(replay.baseline_session_id)
+            number = request.session_numbers.get(session_id)
+            baseline_nodes, result_nodes, baseline_evals, candidate_evals = payload
             scope = assert_override_scope(
                 baseline_nodes, result_nodes, request.candidate_prompt
             )
@@ -392,19 +400,11 @@ class KitaruVerificationBackend:
                     )
                 )
                 continue
-            baseline_eval = select_evaluation(
-                await gateway.evaluations_for(str(replay.baseline_session_id)),
-                request.evaluation_name,
-            )
-            candidate_eval = select_evaluation(
-                await gateway.evaluations_for(str(result_id)),
-                request.evaluation_name,
-            )
             outcome = classify_replay_session(
                 session_id=session_id,
                 number=number,
-                baseline_eval=baseline_eval,
-                candidate_eval=candidate_eval,
+                baseline_eval=select_evaluation(baseline_evals, request.evaluation_name),
+                candidate_eval=select_evaluation(candidate_evals, request.evaluation_name),
                 requested_evaluator_version=int(request.evaluator_version),
             )
             if isinstance(outcome, Divergence):
@@ -447,6 +447,40 @@ class KitaruVerificationBackend:
             experiment_run_id=submitted.experiment_run_id,
         )
         return result
+
+
+_ReplayPayload = tuple[tuple[Any, ...], tuple[Any, ...], list[Any], list[Any]]
+
+
+async def _fetch_replay_payloads(
+    gateway: KitaruGateway,
+    replays: Sequence[Any],
+    *,
+    jobs: int = FETCH_JOBS,
+) -> list[_ReplayPayload]:
+    """Fetch baseline/result nodes and evaluations with bounded concurrency.
+
+    One replay occupies one semaphore slot, matching ``KitaruGateway.fetch_records``.
+    The four HTTP calls for that replay run concurrently inside the slot.
+    """
+
+    if not replays:
+        return []
+    semaphore = asyncio.Semaphore(max(1, jobs))
+
+    async def one(replay: Any) -> _ReplayPayload:
+        baseline_id = str(replay.baseline_session_id)
+        result_id = str(replay.result_session_id)
+        async with semaphore:
+            baseline_nodes, result_nodes, baseline_evals, candidate_evals = await asyncio.gather(
+                gateway.session_nodes(baseline_id),
+                gateway.session_nodes(result_id),
+                gateway.evaluations_for(baseline_id),
+                gateway.evaluations_for(result_id),
+            )
+            return baseline_nodes, result_nodes, baseline_evals, candidate_evals
+
+    return list(await asyncio.gather(*(one(replay) for replay in replays)))
 
 
 def _maybe_float(value: Any) -> float | None:
