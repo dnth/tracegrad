@@ -102,8 +102,12 @@ side effect.
 **Override scope (hard invariant).** Only the root LLM system prompt is
 overridden (`ReplayOverride.system_prompt`). After replay, assert root LLM
 nodes carry the candidate and non-root LLM nodes carry their baseline
-counterpart. Violations are `OVERRIDE_SCOPE_DIVERGENCE`. Both divergence kinds
-are **incomparable** — not improved, not regressed (ADR 0006).
+counterpart. Violations are `OVERRIDE_SCOPE_DIVERGENCE`. A failed `select_evaluation`
+is `SELECT_EVALUATION_FAILED` (drop reason in detail). A mismatched
+`evaluator_version` is `EVALUATOR_VERSION_MISMATCH`. Scores that cannot
+be classified are `SCORE_UNCLASSIFIED`. All of these are **incomparable**
+— not improved, not regressed — and stay in the per-session buckets.
+Headline aggregates still come from Kitaru (ADR 0006).
 
 **Cohort constraint.** Mixed-agent-version cohorts are refused with a
 per-version breakdown (ADR 0007). Baseline and candidate use the same evaluator

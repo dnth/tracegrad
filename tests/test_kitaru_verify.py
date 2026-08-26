@@ -19,6 +19,7 @@ from tracegrad.canonical import text_hash
 from tracegrad.edits import resolve_edits
 from tracegrad.integrations.kitaru.backend import (
     assert_override_scope,
+    classify_replay_session,
     classify_scores,
     is_tool_history_miss,
     mixed_agent_version_message,
@@ -28,15 +29,24 @@ from tracegrad.integrations.kitaru.policy import (
     asserts_no_passthrough,
     recorded_history_policy,
 )
+from tracegrad.integrations.kitaru.scores import (
+    REASON_AMBIGUOUS_EVALUATION,
+    REASON_SCORE_UNAVAILABLE,
+)
 from tracegrad.integrations.kitaru.snapshot import RUN_SOURCE_FILENAME
 from tracegrad.inventory import build_inventory
 from tracegrad.schema import Edit
 from tracegrad.state import atomic_write_json, initialize
 from tracegrad.verify import (
+    DIVERGENCE_EVALUATOR_VERSION,
+    DIVERGENCE_SCORE,
+    DIVERGENCE_SELECT,
+    Divergence,
     SubmittedVerification,
     VerificationRequest,
     VerificationResult,
     VerifyError,
+    format_verification_report,
     matching_verification,
     refuse_ungated_apply,
     run_verification,
@@ -299,6 +309,161 @@ def test_classify_fail_to_pass_is_improved() -> None:
     assert classify_scores(baseline, candidate) == "improved"
     assert classify_scores(candidate, baseline) == "regressed"
     assert classify_scores(candidate, candidate) == "unchanged"
+
+
+def _eval(*, version: int = 3, score: float | None = 0.5, passed: bool | None = True) -> SimpleNamespace:
+    return SimpleNamespace(
+        evaluator_version=version,
+        score=score,
+        passed=passed,
+        data_type="float",
+        value=None,
+    )
+
+
+def test_select_evaluation_failure_is_select_evaluation_failed() -> None:
+    outcome = classify_replay_session(
+        session_id="s-select",
+        number=4,
+        baseline_eval=REASON_SCORE_UNAVAILABLE,
+        candidate_eval=_eval(),
+        requested_evaluator_version=3,
+    )
+    assert isinstance(outcome, Divergence)
+    assert outcome.kind == DIVERGENCE_SELECT
+    assert outcome.kind == "SELECT_EVALUATION_FAILED"
+    assert "baseline: judge-score-unavailable" in outcome.detail
+    assert outcome.session_id == "s-select"
+    assert outcome.number == 4
+
+    both = classify_replay_session(
+        session_id="s-both",
+        number=None,
+        baseline_eval=REASON_SCORE_UNAVAILABLE,
+        candidate_eval=REASON_AMBIGUOUS_EVALUATION,
+        requested_evaluator_version=3,
+    )
+    assert isinstance(both, Divergence)
+    assert both.kind == "SELECT_EVALUATION_FAILED"
+    assert "baseline: judge-score-unavailable" in both.detail
+    assert "candidate: ambiguous-evaluation" in both.detail
+
+
+def test_evaluator_version_mismatch_is_typed() -> None:
+    outcome = classify_replay_session(
+        session_id="s-ver",
+        number=2,
+        baseline_eval=_eval(version=2),
+        candidate_eval=_eval(version=3),
+        requested_evaluator_version=3,
+    )
+    assert isinstance(outcome, Divergence)
+    assert outcome.kind == DIVERGENCE_EVALUATOR_VERSION
+    assert outcome.kind == "EVALUATOR_VERSION_MISMATCH"
+    assert "requested evaluator_version 3" in outcome.detail
+    assert "baseline=2" in outcome.detail
+    assert "candidate=3" in outcome.detail
+
+
+def test_unclassified_scores_are_score_unclassified() -> None:
+    unclassifiable = SimpleNamespace(
+        evaluator_version=3,
+        score=None,
+        passed=None,
+        data_type="float",
+        value=None,
+    )
+    assert classify_scores(unclassifiable, unclassifiable) is None
+    outcome = classify_replay_session(
+        session_id="s-score",
+        number=9,
+        baseline_eval=unclassifiable,
+        candidate_eval=unclassifiable,
+        requested_evaluator_version=3,
+    )
+    assert isinstance(outcome, Divergence)
+    assert outcome.kind == DIVERGENCE_SCORE
+    assert outcome.kind == "SCORE_UNCLASSIFIED"
+
+
+def test_replay_session_still_classifies_comparable_scores() -> None:
+    outcome = classify_replay_session(
+        session_id="s-ok",
+        number=1,
+        baseline_eval=_eval(score=0.2, passed=False),
+        candidate_eval=_eval(score=0.9, passed=True),
+        requested_evaluator_version=3,
+    )
+    assert outcome == "improved"
+
+
+def test_new_divergence_kinds_stay_in_per_session_buckets(tmp_path: Path) -> None:
+    request = _request()
+    result = VerificationResult(
+        status="completed",
+        baseline_count=4,
+        candidate_count=4,
+        baseline_mean_score=0.4,
+        candidate_mean_score=0.4,
+        improved_sessions=["s-improved"],
+        diverged_sessions=[
+            Divergence(
+                session_id="s-select",
+                kind="SELECT_EVALUATION_FAILED",
+                detail="baseline: judge-score-unavailable",
+                number=1,
+            ),
+            Divergence(
+                session_id="s-ver",
+                kind="EVALUATOR_VERSION_MISMATCH",
+                detail="requested evaluator_version 3; baseline=2; candidate=3",
+                number=2,
+            ),
+            Divergence(
+                session_id="s-score",
+                kind="SCORE_UNCLASSIFIED",
+                detail="scores could not be classified as improved, regressed, or unchanged",
+                number=3,
+            ),
+        ],
+        replay_failures=[],
+        cohort_version_id=request.cohort_version_id,
+        agent_version_id=request.agent_version_id,
+        evaluator_version=str(request.evaluator_version),
+        baseline_prompt_hash=request.baseline_prompt_hash,
+        candidate_prompt_hash=request.candidate_prompt_hash,
+        verification_fingerprint="fp",
+        experiment_run_id="erun-1",
+    )
+
+    class DivergedBackend(FakeBackend):
+        def collect(
+            self, request: VerificationRequest, submitted: SubmittedVerification
+        ) -> VerificationResult:
+            self.collected += 1
+            return result
+
+    stored = run_verification(tmp_path, request, DivergedBackend())
+    assert stored.replay_failures == []
+    assert {item.kind for item in stored.diverged_sessions} == {
+        "SELECT_EVALUATION_FAILED",
+        "EVALUATOR_VERSION_MISMATCH",
+        "SCORE_UNCLASSIFIED",
+    }
+    matched = matching_verification(tmp_path, request.candidate_prompt_hash)
+    assert matched is not None
+    assert matched.result is not None
+    assert matched.per_session["s-select"] == "SELECT_EVALUATION_FAILED"
+    assert matched.per_session["s-ver"] == "EVALUATOR_VERSION_MISMATCH"
+    assert matched.per_session["s-score"] == "SCORE_UNCLASSIFIED"
+    assert matched.per_session["s-improved"] == "improved"
+    report = format_verification_report(stored, request)
+    assert "SELECT_EVALUATION_FAILED" in report
+    assert "EVALUATOR_VERSION_MISMATCH" in report
+    assert "SCORE_UNCLASSIFIED" in report
+    assert "judge-score-unavailable" in report
+    assert stored.baseline_count == 4
+    assert stored.candidate_mean_score == 0.4
 
 
 def test_interrupted_verify_does_not_duplicate_the_experiment(tmp_path: Path) -> None:

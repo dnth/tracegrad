@@ -30,7 +30,18 @@ RUN_SOURCE_FILENAME = "kitaru-source.json"
 
 DIVERGENCE_HISTORY = "TOOL_HISTORY_MISS"
 DIVERGENCE_SCOPE = "OVERRIDE_SCOPE_DIVERGENCE"
+DIVERGENCE_EVALUATOR_VERSION = "EVALUATOR_VERSION_MISMATCH"
+DIVERGENCE_SELECT = "SELECT_EVALUATION_FAILED"
+DIVERGENCE_SCORE = "SCORE_UNCLASSIFIED"
 VERIFICATION_FILENAME = "state.json"
+
+DivergenceKind = Literal[
+    "TOOL_HISTORY_MISS",
+    "OVERRIDE_SCOPE_DIVERGENCE",
+    "EVALUATOR_VERSION_MISMATCH",
+    "SELECT_EVALUATION_FAILED",
+    "SCORE_UNCLASSIFIED",
+]
 
 
 class VerifyError(ValueError):
@@ -41,7 +52,7 @@ class Divergence(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     session_id: StrictStr
-    kind: Literal["TOOL_HISTORY_MISS", "OVERRIDE_SCOPE_DIVERGENCE"]
+    kind: DivergenceKind
     detail: StrictStr = ""
     number: StrictInt | None = None
 

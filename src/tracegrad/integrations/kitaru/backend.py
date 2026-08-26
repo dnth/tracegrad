@@ -10,8 +10,11 @@ import uuid
 from typing import Any
 
 from tracegrad.verify import (
+    DIVERGENCE_EVALUATOR_VERSION,
     DIVERGENCE_HISTORY,
     DIVERGENCE_SCOPE,
+    DIVERGENCE_SCORE,
+    DIVERGENCE_SELECT,
     Divergence,
     ReplayFailure,
     SubmittedVerification,
@@ -128,6 +131,59 @@ def assert_override_scope(
                 f"non-root llm node {node_index(node)} did not keep its baseline prompt"
             )
     return None
+
+
+def classify_replay_session(
+    *,
+    session_id: str,
+    number: int | None,
+    baseline_eval: Any,
+    candidate_eval: Any,
+    requested_evaluator_version: int,
+) -> str | Divergence:
+    """Bucket one replay: improved/regressed/unchanged, or a typed divergence.
+
+    ``select_evaluation`` drop reasons, evaluator-version mismatch, and an
+    unclassified score are incomparable — they go in ``diverged``, never
+    ``replay_failures``, and never vanish from the per-session buckets.
+    """
+
+    if isinstance(baseline_eval, str) or isinstance(candidate_eval, str):
+        parts: list[str] = []
+        if isinstance(baseline_eval, str):
+            parts.append(f"baseline: {baseline_eval}")
+        if isinstance(candidate_eval, str):
+            parts.append(f"candidate: {candidate_eval}")
+        return Divergence(
+            session_id=session_id,
+            kind=DIVERGENCE_SELECT,
+            detail="; ".join(parts),
+            number=number,
+        )
+    baseline_version = evaluator_version_of(baseline_eval)
+    candidate_version = evaluator_version_of(candidate_eval)
+    if (
+        baseline_version != requested_evaluator_version
+        or candidate_version != requested_evaluator_version
+    ):
+        return Divergence(
+            session_id=session_id,
+            kind=DIVERGENCE_EVALUATOR_VERSION,
+            detail=(
+                f"requested evaluator_version {requested_evaluator_version}; "
+                f"baseline={baseline_version}; candidate={candidate_version}"
+            ),
+            number=number,
+        )
+    verdict = classify_scores(baseline_eval, candidate_eval)
+    if verdict is None:
+        return Divergence(
+            session_id=session_id,
+            kind=DIVERGENCE_SCORE,
+            detail="scores could not be classified as improved, regressed, or unchanged",
+            number=number,
+        )
+    return verdict
 
 
 def classify_scores(
@@ -322,18 +378,21 @@ class KitaruVerificationBackend:
                 await gateway.evaluations_for(str(result_id)),
                 request.evaluation_name,
             )
-            if isinstance(baseline_eval, str) or isinstance(candidate_eval, str):
+            outcome = classify_replay_session(
+                session_id=session_id,
+                number=number,
+                baseline_eval=baseline_eval,
+                candidate_eval=candidate_eval,
+                requested_evaluator_version=int(request.evaluator_version),
+            )
+            if isinstance(outcome, Divergence):
+                diverged.append(outcome)
                 continue
-            if evaluator_version_of(baseline_eval) != request.evaluator_version:
-                continue
-            if evaluator_version_of(candidate_eval) != request.evaluator_version:
-                continue
-            verdict = classify_scores(baseline_eval, candidate_eval)
-            if verdict == "improved":
+            if outcome == "improved":
                 improved.append(session_id)
-            elif verdict == "regressed":
+            elif outcome == "regressed":
                 regressed.append(session_id)
-            elif verdict == "unchanged":
+            elif outcome == "unchanged":
                 unchanged.append(session_id)
 
         # Headline numbers from /api/v1/ui/experiment-runs/{id}/evaluation-aggregates
