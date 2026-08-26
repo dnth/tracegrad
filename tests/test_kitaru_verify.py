@@ -142,7 +142,9 @@ def _multi_edit_proposal(project: Path, prompt: str = PROMPT) -> Proposal:
     return proposal
 
 
-def _source_sidecar(project: Path, run_id: str = "run-0001") -> None:
+def _source_sidecar(
+    project: Path, run_id: str = "run-0001", *, cohort_version_id: str = "cv1"
+) -> None:
     layout = initialize(project)
     atomic_write_json(
         layout.runs / run_id / RUN_SOURCE_FILENAME,
@@ -150,7 +152,7 @@ def _source_sidecar(project: Path, run_id: str = "run-0001") -> None:
             "fingerprint": {
                 "source": "kitaru",
                 "cohort_id": "c1",
-                "cohort_version_id": "cv1",
+                "cohort_version_id": cohort_version_id,
                 "evaluation_name": "quality",
                 "evaluator_id": "ev",
                 "evaluator_version": 3,
@@ -604,7 +606,11 @@ def test_new_divergence_kinds_stay_in_per_session_buckets(tmp_path: Path) -> Non
         "EVALUATOR_VERSION_MISMATCH",
         "SCORE_UNCLASSIFIED",
     }
-    matched = matching_verification(tmp_path, request.candidate_prompt_hash)
+    matched = matching_verification(
+        tmp_path,
+        request.candidate_prompt_hash,
+        cohort_version_id=request.cohort_version_id,
+    )
     assert matched is not None
     assert matched.result is not None
     assert matched.per_session["s-select"] == "SELECT_EVALUATION_FAILED"
@@ -629,7 +635,14 @@ def test_interrupted_verify_does_not_duplicate_the_experiment(tmp_path: Path) ->
     assert backend.submitted == 1
     assert backend.collected == 2
     assert first.experiment_run_id == second.experiment_run_id == "erun-1"
-    assert matching_verification(tmp_path, request.candidate_prompt_hash) is not None
+    assert (
+        matching_verification(
+            tmp_path,
+            request.candidate_prompt_hash,
+            cohort_version_id=request.cohort_version_id,
+        )
+        is not None
+    )
 
 
 def test_apply_is_gated_on_a_matching_hash(tmp_path: Path) -> None:
@@ -728,7 +741,7 @@ def test_apply_gate_requires_a_stored_result(tmp_path: Path) -> None:
     request = _request(candidate_prompt=written, candidate_prompt_hash=digest)
     with pytest.raises(RuntimeError, match="collect exploded"):
         run_verification(tmp_path, request, SubmitOnlyBackend())
-    assert matching_verification(tmp_path, digest) is None
+    assert matching_verification(tmp_path, digest, cohort_version_id="cv1") is None
     with pytest.raises(VerifyError, match="hash-matching"):
         refuse_ungated_apply(
             tmp_path, run_id="run-0001", candidate_prompt_hash=digest, force=False
@@ -828,7 +841,7 @@ def test_collect_fetch_error_does_not_persist_result_or_ungate_apply(tmp_path: P
     assert "TimeoutError" in message
     assert caught.value.__cause__ is not None
 
-    assert matching_verification(tmp_path, digest) is None
+    assert matching_verification(tmp_path, digest, cohort_version_id="cv1") is None
     state = load_verification_state(
         initialize(tmp_path), verification_id_for("run-0001", digest)
     )
@@ -931,7 +944,7 @@ def test_collect_sdk_errors_do_not_persist_result_or_ungate_apply(
     with pytest.raises(KitaruVerifyError, match="collect aborted") as caught:
         run_verification(tmp_path, request, Backend())
     assert "Apply stays gated" in str(caught.value)
-    assert matching_verification(tmp_path, digest) is None
+    assert matching_verification(tmp_path, digest, cohort_version_id="cv1") is None
     state = load_verification_state(
         initialize(tmp_path), verification_id_for("run-0001", digest)
     )
@@ -979,13 +992,51 @@ def test_apply_gate_accepts_a_finished_failed_report(tmp_path: Path) -> None:
 
     request = _request(candidate_prompt=written, candidate_prompt_hash=digest)
     run_verification(tmp_path, request, FailedBackend())
-    matched = matching_verification(tmp_path, digest)
+    matched = matching_verification(tmp_path, digest, cohort_version_id="cv1")
     assert matched is not None
     assert matched.result is not None
     assert matched.result.status == "failed"
     refuse_ungated_apply(
         tmp_path, run_id="run-0001", candidate_prompt_hash=digest, force=False
     )
+
+
+def test_same_hash_and_same_cohort_ungates_without_matching_run_id(tmp_path: Path) -> None:
+    proposal = _proposal(tmp_path)
+    _source_sidecar(tmp_path, run_id="run-0001")
+    written = candidate_prompt(PROMPT, proposal, [0])
+    digest = text_hash(written)
+    run_verification(
+        tmp_path,
+        _request(candidate_prompt=written, candidate_prompt_hash=digest),
+        FakeBackend(),
+    )
+    _source_sidecar(tmp_path, run_id="run-0002")
+    refuse_ungated_apply(
+        tmp_path, run_id="run-0002", candidate_prompt_hash=digest, force=False
+    )
+    matched = matching_verification(tmp_path, digest, cohort_version_id="cv1")
+    assert matched is not None
+    assert matched.run_id == "run-0001"
+
+
+def test_same_hash_and_different_cohort_stays_gated(tmp_path: Path) -> None:
+    proposal = _proposal(tmp_path)
+    _source_sidecar(tmp_path, run_id="run-0001")
+    written = candidate_prompt(PROMPT, proposal, [0])
+    digest = text_hash(written)
+    run_verification(
+        tmp_path,
+        _request(candidate_prompt=written, candidate_prompt_hash=digest),
+        FakeBackend(),
+    )
+    _source_sidecar(tmp_path, run_id="run-0002", cohort_version_id="cv-new")
+    with pytest.raises(VerifyError, match="hash-matching"):
+        refuse_ungated_apply(
+            tmp_path, run_id="run-0002", candidate_prompt_hash=digest, force=False
+        )
+    assert matching_verification(tmp_path, digest, cohort_version_id="cv-new") is None
+    assert matching_verification(tmp_path, digest, cohort_version_id="cv1") is not None
 
 
 def test_verification_id_is_path_safe() -> None:

@@ -3,8 +3,8 @@
 Holds a :class:`~tracegrad.ports.VerificationBackend` without becoming
 backend-aware (ADR 0010).  Persist / resume lives here so an interrupted
 verify never duplicates the experiment.  Apply-gating on
-``candidate_prompt_hash`` lives here so the core of ``apply`` stays a writer,
-not a Kitaru client.
+``candidate_prompt_hash`` plus the originating cohort lives here so the core
+of ``apply`` stays a writer, not a Kitaru client.
 """
 
 from __future__ import annotations
@@ -189,23 +189,44 @@ def list_verification_states(layout: StateLayout) -> list[VerificationState]:
 def matching_verification(
     project_root: str | Path,
     candidate_prompt_hash: str,
+    *,
+    cohort_version_id: str,
 ) -> VerificationState | None:
-    """A persisted verification of exactly this candidate text, if any.
+    """A persisted verification of this candidate on this cohort, if any.
 
-    Requires a stored ``result``. A submit that never collected (``result``
-    is ``None``) must not ungate apply. A finished REVIEW/FAILED report
-    still matches; status is not required to be ``completed``.
+    Requires a stored ``result``. Hash-only is not enough: a verify against
+    a previous cohort must not ungate apply on a new one. Apply's ``run_id``
+    is not the match key. A finished REVIEW/FAILED report still matches;
+    status is not required to be ``completed``.
     """
 
+    if not candidate_prompt_hash or not cohort_version_id:
+        return None
     layout = initialize(project_root)
     for state in list_verification_states(layout):
         if (
             state.candidate_prompt_hash == candidate_prompt_hash
+            and state.cohort_version_id == cohort_version_id
             and state.experiment_run_id
             and state.result is not None
         ):
             return state
     return None
+
+
+def _source_cohort_version_id(project_root: str | Path, run_id: str) -> str | None:
+    """Cohort version from the originating run's sidecar, if usable."""
+
+    payload = load_run_source_payload(project_root, run_id)
+    if payload is None:
+        return None
+    fingerprint = payload.get("fingerprint")
+    if not isinstance(fingerprint, dict):
+        return None
+    value = fingerprint.get("cohort_version_id")
+    if value is None or str(value) == "":
+        return None
+    return str(value)
 
 
 def load_run_source_payload(project_root: str | Path, run_id: str) -> dict[str, Any] | None:
@@ -259,20 +280,32 @@ def refuse_ungated_apply(
 ) -> None:
     """Refuse apply when a backend is configured and no matching verify exists.
 
-    Verify hashes the full proposal. A selected subset therefore cannot be
-    ungated by re-running verify; the operator must ``apply --all`` or
-    ``--force`` (ADR 0009).
+    Match is ``candidate_prompt_hash`` plus the sidecar's ``cohort_version_id``.
+    ``run_id`` loads that sidecar; it is not the match key. A new cohort
+    needs re-verify even when the candidate text is unchanged. A selected
+    subset cannot be ungated by re-running verify; the operator must
+    ``apply --all`` or ``--force`` (ADR 0009).
     """
 
     if force or not backend_is_configured(project_root, run_id):
         return
-    if matching_verification(project_root, candidate_prompt_hash) is None:
+    cohort_version_id = _source_cohort_version_id(project_root, run_id)
+    if (
+        cohort_version_id is None
+        or matching_verification(
+            project_root,
+            candidate_prompt_hash,
+            cohort_version_id=cohort_version_id,
+        )
+        is None
+    ):
         raise VerifyError(
-            "apply is gated on a hash-matching verification for this candidate. "
-            "Verify always hashes the full proposal. A subset of a verified "
-            "proposal (interactive or --accept) needs --force or "
+            "apply is gated on a hash-matching verification for this candidate "
+            "on this cohort. Verify always hashes the full proposal. A subset "
+            "of a verified proposal (interactive or --accept) needs --force or "
             "`tracegrad apply --all`; re-running verify cannot ungate it. "
-            "See ADR 0009."
+            "A new cohort needs `tracegrad verify` even when the candidate "
+            "text is unchanged. See ADR 0009."
         )
 
 
