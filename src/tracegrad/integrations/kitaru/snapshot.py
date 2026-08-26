@@ -324,7 +324,10 @@ def snapshot_matches_request(
         if not fingerprints_compatible(fingerprint, {"evaluation_name": evaluation_name}):
             return False
         meta = load_meta(layout, snapshot_id)
-    except (OSError, ValueError):
+        # Malformed JSON or a missing session_id/reason must not traceback
+        # in prepare_kitaru_source; treat the snapshot as corrupt and skip.
+        load_source_drops(layout, snapshot_id)
+    except (OSError, ValueError, KeyError, TypeError):
         return False
     if meta.cohort_name != cohort_name:
         return False

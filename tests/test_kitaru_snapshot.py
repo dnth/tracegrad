@@ -16,6 +16,7 @@ from tracegrad.integrations.kitaru.client import CohortResolution, KitaruGateway
 from tracegrad.integrations.kitaru.errors import KitaruSourceError
 from tracegrad.integrations.kitaru.mapping import MappedTrace, SourceDrop
 from tracegrad.integrations.kitaru.snapshot import (
+    DROPS_FILENAME,
     LATEST_POINTER,
     SourceFingerprint,
     SourceMeta,
@@ -624,6 +625,65 @@ def test_corrupt_snapshot_dir_is_skipped_during_reuse(tmp_path) -> None:
         )
         is None
     )
+
+
+def test_corrupt_source_drops_are_skipped_during_reuse(tmp_path) -> None:
+    layout = initialize(tmp_path)
+    write_snapshot(
+        layout,
+        fingerprint=_sample_fingerprint(),
+        meta=_sample_meta(),
+        mapped=_sample_mapped(),
+        dropped=[SourceDrop("s2", "system-prompt-unavailable", number=13)],
+    )
+    write_snapshot(
+        layout,
+        fingerprint=_sample_fingerprint(cohort_version_id="cv-bad"),
+        meta=_sample_meta(display_version="week-36"),
+        mapped=_sample_mapped(trace_id="bad"),
+        dropped=[],
+    )
+    bad_drops = layout.sources / "kitaru" / "cv-bad" / "quality" / DROPS_FILENAME
+
+    for payload in ("{not-json\n", "{}\n", '{"reason": "no-session"}\n', "[]\n"):
+        bad_drops.write_text(payload, encoding="utf-8")
+        found = find_local_snapshot(
+            layout, cohort_name="support-production", evaluation_name="quality"
+        )
+        assert found == snapshot_key("cv", "quality")
+        prepared = prepare_kitaru_source(
+            project_root=tmp_path,
+            manifest=_manifest(),
+            cohort_name="support-production",
+            evaluation_name="quality",
+        )
+        assert prepared.refreshed is False
+        assert prepared.fingerprint.cohort_version_id == "cv"
+
+    good_drops = layout.sources / "kitaru" / "cv" / "quality" / DROPS_FILENAME
+    good_drops.write_text('{"session_id": "s2"}\n', encoding="utf-8")
+    assert (
+        find_local_snapshot(
+            layout, cohort_name="support-production", evaluation_name="quality"
+        )
+        is None
+    )
+
+    class Boom:
+        async def resolve_cohort(self, name: str, version: str | None = None) -> object:
+            raise TimeoutError("server unreachable")
+
+        async def close(self) -> None:
+            return None
+
+    with pytest.raises(KitaruSourceError, match="resolving the cohort"):
+        prepare_kitaru_source(
+            project_root=tmp_path,
+            manifest=_manifest(),
+            cohort_name="support-production",
+            evaluation_name="quality",
+            gateway=Boom(),
+        )
 
 
 def test_source_sdk_errors_are_kitaru_source_errors(tmp_path) -> None:
