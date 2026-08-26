@@ -225,17 +225,22 @@ def refuse_ungated_apply(
     candidate_prompt_hash: str,
     force: bool,
 ) -> None:
-    """Refuse apply when a backend is configured and no matching verify exists."""
+    """Refuse apply when a backend is configured and no matching verify exists.
+
+    Verify hashes the full proposal. A selected subset therefore cannot be
+    ungated by re-running verify; the operator must ``apply --all`` or
+    ``--force`` (ADR 0009).
+    """
 
     if force or not backend_is_configured(project_root, run_id):
         return
     if matching_verification(project_root, candidate_prompt_hash) is None:
         raise VerifyError(
             "apply is gated on a hash-matching verification for this candidate. "
-            "Run `tracegrad verify --backend kitaru` first, or pass --force "
-            "to override. Matching the hash (not the run id) is what makes the "
-            "gate real: verify, hand-edit, and apply notices the text was never "
-            "verified. See ADR 0009."
+            "Verify always hashes the full proposal. A subset of a verified "
+            "proposal (interactive or --accept) needs --force or "
+            "`tracegrad apply --all`; re-running verify cannot ungate it. "
+            "See ADR 0009."
         )
 
 

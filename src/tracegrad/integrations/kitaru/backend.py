@@ -27,7 +27,7 @@ from tracegrad.verify import (
 
 from .client import FETCH_JOBS, KitaruGateway, run_async, worker_covers_agent_version
 from .errors import KitaruVerifyError
-from .graph import index_nodes, is_root_llm_node, llm_nodes, node_index
+from .graph import index_nodes, is_root_llm_node, llm_nodes, node_index, root_llm_nodes
 from .mapping import extract_system_prompt
 from .policy import asserts_no_passthrough, recorded_history_policy
 from .require import require_kitaru
@@ -114,8 +114,16 @@ def assert_override_scope(
     result_nodes: list[Any] | tuple[Any, ...],
     candidate_prompt: str,
 ) -> str | None:
-    """Return a detail string when the override did not land on root nodes only."""
+    """Return a detail string when the override did not land on root nodes only.
 
+    ADR 0006 requires every root LLM node to carry the candidate. An empty
+    result graph, or one with no root ``llm_call``, is
+    ``OVERRIDE_SCOPE_DIVERGENCE`` — not a vacuous pass.
+    """
+
+    roots = root_llm_nodes(result_nodes)
+    if not roots:
+        return "no root llm node carrying the candidate prompt"
     base_by = index_nodes(baseline_nodes)
     result_by = index_nodes(result_nodes)
     for node in llm_nodes(result_nodes):

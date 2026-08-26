@@ -99,6 +99,46 @@ def _proposal(project: Path, prompt: str = PROMPT) -> Proposal:
     return proposal
 
 
+def _multi_edit_proposal(project: Path, prompt: str = PROMPT) -> Proposal:
+    (project / "prompt.md").write_text(prompt, encoding="utf-8")
+    inventory = build_inventory(prompt)
+    first, second = inventory.instructions[1], inventory.instructions[2]
+    resolution = resolve_edits(
+        inventory,
+        [
+            Edit(
+                instruction_id=first.instruction_id,
+                operation="REWRITE",
+                text="Be brief.",
+                covers_theme="verbosity",
+                watch_metric="verbosity",
+            ),
+            Edit(
+                instruction_id=second.instruction_id,
+                operation="REWRITE",
+                text="Always cite the doc.",
+                covers_theme="missing-citation",
+                watch_metric="missing-citation",
+            ),
+        ],
+    )
+    proposal = Proposal(
+        run_id="run-0001",
+        template_file="prompt.md",
+        base_prompt_hash=text_hash(prompt),
+        edits=[
+            ProposedEdit(
+                edit=item.edit,
+                before=item.anchor.text if item.anchor else "",
+                after=item.replacement,
+            )
+            for item in resolution.resolved
+        ],
+    )
+    save_proposal(project, proposal)
+    return proposal
+
+
 def _source_sidecar(project: Path, run_id: str = "run-0001") -> None:
     layout = initialize(project)
     atomic_write_json(
@@ -307,6 +347,59 @@ def test_override_scope_divergence_on_non_root() -> None:
     assert "non-root" in detail
 
 
+def test_override_scope_diverges_when_result_has_no_root_llm() -> None:
+    candidate = "NEW PROMPT"
+    baseline = [
+        SimpleNamespace(
+            index=0,
+            parent_index=None,
+            secondary_parent_indexes=[],
+            node_type="llm_call",
+            inputs={"system": "ROOT"},
+            system_prompt_selector="/system",
+        ),
+    ]
+    empty_detail = assert_override_scope(baseline, (), candidate)
+    assert empty_detail is not None
+    assert "no root llm node carrying the candidate" in empty_detail
+
+    tool_only = [
+        SimpleNamespace(
+            index=0,
+            parent_index=None,
+            secondary_parent_indexes=[],
+            node_type="tool_call",
+            inputs={},
+            system_prompt_selector=None,
+        ),
+    ]
+    tool_detail = assert_override_scope(baseline, tool_only, candidate)
+    assert tool_detail is not None
+    assert "no root llm node carrying the candidate" in tool_detail
+
+    non_root_only = [
+        SimpleNamespace(
+            index=0,
+            parent_index=None,
+            secondary_parent_indexes=[],
+            node_type="subagent_call",
+            inputs={},
+            system_prompt_selector=None,
+        ),
+        SimpleNamespace(
+            index=1,
+            parent_index=0,
+            secondary_parent_indexes=[],
+            node_type="llm_call",
+            inputs={"system": candidate},
+            system_prompt_selector="/system",
+        ),
+    ]
+    nested_detail = assert_override_scope(baseline, non_root_only, candidate)
+    assert nested_detail is not None
+    assert "no root llm node carrying the candidate" in nested_detail
+
+
 def test_mixed_agent_version_message_includes_a_breakdown() -> None:
     message = mixed_agent_version_message({"av-1": 12, "av-2": 3})
     assert "av-1: 12 session(s)" in message
@@ -502,6 +595,33 @@ def test_apply_is_gated_on_a_matching_hash(tmp_path: Path) -> None:
     refuse_ungated_apply(
         tmp_path, run_id="run-0001", candidate_prompt_hash=digest, force=True
     )
+
+
+def test_partial_apply_after_full_verify_needs_force_or_all(tmp_path: Path) -> None:
+    proposal = _multi_edit_proposal(tmp_path)
+    _source_sidecar(tmp_path)
+    full = candidate_prompt(PROMPT, proposal, range(len(proposal.edits)))
+    subset = candidate_prompt(PROMPT, proposal, [1])
+    assert text_hash(full) != text_hash(subset)
+    run_verification(
+        tmp_path,
+        _request(candidate_prompt=full, candidate_prompt_hash=text_hash(full)),
+        FakeBackend(),
+    )
+    refuse_ungated_apply(
+        tmp_path, run_id="run-0001", candidate_prompt_hash=text_hash(full), force=False
+    )
+    with pytest.raises(VerifyError, match="apply --all") as caught:
+        refuse_ungated_apply(
+            tmp_path,
+            run_id="run-0001",
+            candidate_prompt_hash=text_hash(subset),
+            force=False,
+        )
+    message = str(caught.value)
+    assert "--force" in message
+    assert "re-running verify cannot ungate" in message
+    assert "Run `tracegrad verify --backend kitaru` first" not in message
 
 
 def test_apply_gate_does_not_affect_core_only_runs(tmp_path: Path) -> None:
@@ -817,7 +937,17 @@ def test_collect_fetches_replay_payloads_with_bounded_concurrency() -> None:
 
         async def session_nodes(self, session_id: str) -> tuple[object, ...]:
             await self._track(session_id)
-            return ()
+            system = CANDIDATE if session_id.startswith("r") else PROMPT
+            return (
+                SimpleNamespace(
+                    index=0,
+                    parent_index=None,
+                    secondary_parent_indexes=[],
+                    node_type="llm_call",
+                    inputs={"system": system},
+                    system_prompt_selector="/system",
+                ),
+            )
 
         async def evaluations_for(self, session_id: str) -> list[object]:
             await self._track(session_id)
