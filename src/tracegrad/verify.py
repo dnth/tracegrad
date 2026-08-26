@@ -27,6 +27,14 @@ from .state import (
 )
 
 RUN_SOURCE_FILENAME = "kitaru-source.json"
+_FINGERPRINT_REQUIRED = (
+    "cohort_id",
+    "cohort_version_id",
+    "evaluation_name",
+    "evaluator_id",
+    "evaluator_version",
+    "agent_id",
+)
 
 DIVERGENCE_HISTORY = "TOOL_HISTORY_MISS"
 DIVERGENCE_SCOPE = "OVERRIDE_SCOPE_DIVERGENCE"
@@ -213,7 +221,22 @@ def load_run_source_payload(project_root: str | Path, run_id: str) -> dict[str, 
         payload = json.loads(target.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
-    return payload if isinstance(payload, dict) else None
+    return _usable_run_source_payload(payload)
+
+
+def _usable_run_source_payload(payload: object) -> dict[str, Any] | None:
+    """A sidecar verify can consume without KeyError/TypeError in build_request."""
+
+    if not isinstance(payload, dict):
+        return None
+    fingerprint = payload.get("fingerprint")
+    meta = payload.get("meta")
+    if not isinstance(fingerprint, dict) or not isinstance(meta, dict):
+        return None
+    for key in _FINGERPRINT_REQUIRED:
+        if key not in fingerprint or fingerprint[key] is None:
+            return None
+    return payload
 
 
 def backend_is_configured(project_root: str | Path, run_id: str) -> bool:
@@ -274,36 +297,47 @@ def build_request(
     candidate = candidate_prompt(
         current, proposal, range(len(proposal.edits))
     )
-    fingerprint = source["fingerprint"]
-    meta = source["meta"]
-    agent_version_id = meta.get("agent_version_id")
-    if not agent_version_id:
+    fingerprint = source.get("fingerprint") if isinstance(source, dict) else None
+    meta = source.get("meta") if isinstance(source, dict) else None
+    if not isinstance(fingerprint, dict) or not isinstance(meta, dict):
         raise VerifyError(
-            "verification requires a single agent_version_id on the originating "
-            "cohort; this run's source metadata does not have one. See ADR 0007."
+            f"run {run_id} source metadata is not a usable Kitaru sidecar"
         )
-    return VerificationRequest(
-        run_id=run_id,
-        proposal_id=proposal.run_id,
-        candidate_prompt=candidate,
-        candidate_prompt_hash=text_hash(candidate),
-        baseline_prompt_hash=proposal.base_prompt_hash,
-        cohort_id=str(fingerprint["cohort_id"]),
-        cohort_version_id=str(fingerprint["cohort_version_id"]),
-        cohort_name=str(meta.get("cohort_name") or ""),
-        display_version=meta.get("display_version"),
-        evaluation_name=str(fingerprint["evaluation_name"]),
-        evaluator_id=str(fingerprint["evaluator_id"]),
-        evaluator_version=int(fingerprint["evaluator_version"]),
-        evaluator_name=str(meta.get("evaluator_name") or fingerprint["evaluation_name"]),
-        agent_id=str(fingerprint["agent_id"]),
-        agent_version_id=str(agent_version_id),
-        agent_version_counts=dict(meta.get("agent_version_counts") or {}),
-        system_prompts=dict(meta.get("system_prompts") or {}),
-        session_numbers={
-            key: int(value) for key, value in (meta.get("session_numbers") or {}).items()
-        },
-    )
+    try:
+        agent_version_id = meta.get("agent_version_id")
+        if not agent_version_id:
+            raise VerifyError(
+                "verification requires a single agent_version_id on the originating "
+                "cohort; this run's source metadata does not have one. See ADR 0007."
+            )
+        return VerificationRequest(
+            run_id=run_id,
+            proposal_id=proposal.run_id,
+            candidate_prompt=candidate,
+            candidate_prompt_hash=text_hash(candidate),
+            baseline_prompt_hash=proposal.base_prompt_hash,
+            cohort_id=str(fingerprint["cohort_id"]),
+            cohort_version_id=str(fingerprint["cohort_version_id"]),
+            cohort_name=str(meta.get("cohort_name") or ""),
+            display_version=meta.get("display_version"),
+            evaluation_name=str(fingerprint["evaluation_name"]),
+            evaluator_id=str(fingerprint["evaluator_id"]),
+            evaluator_version=int(fingerprint["evaluator_version"]),
+            evaluator_name=str(meta.get("evaluator_name") or fingerprint["evaluation_name"]),
+            agent_id=str(fingerprint["agent_id"]),
+            agent_version_id=str(agent_version_id),
+            agent_version_counts=dict(meta.get("agent_version_counts") or {}),
+            system_prompts=dict(meta.get("system_prompts") or {}),
+            session_numbers={
+                key: int(value) for key, value in (meta.get("session_numbers") or {}).items()
+            },
+        )
+    except VerifyError:
+        raise
+    except (KeyError, TypeError, ValueError) as exc:
+        raise VerifyError(
+            f"run {run_id} source metadata is not a usable Kitaru sidecar"
+        ) from exc
 
 
 def verification_fingerprint_for(request: VerificationRequest) -> str:

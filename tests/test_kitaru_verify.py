@@ -1051,6 +1051,33 @@ def test_corrupt_run_source_sidecar_does_not_traceback_or_ungate(tmp_path: Path)
         )
 
 
+def test_incomplete_run_source_sidecar_is_rejected_and_stays_gated(tmp_path: Path) -> None:
+    proposal = _proposal(tmp_path)
+    _source_sidecar(tmp_path)
+    sidecar = tmp_path / ".tracegrad" / "runs" / "run-0001" / "kitaru-source.json"
+    digest = text_hash(candidate_prompt(PROMPT, proposal, [0]))
+
+    for payload in ({}, {"fingerprint": {}, "meta": {}}, {"fingerprint": {"cohort_id": "c1"}, "meta": {}}):
+        sidecar.write_text(json.dumps(payload), encoding="utf-8")
+        assert load_run_source_payload(tmp_path, "run-0001") is None
+        assert backend_is_configured(tmp_path, "run-0001") is True
+        with pytest.raises(VerifyError, match="hash-matching"):
+            refuse_ungated_apply(
+                tmp_path, run_id="run-0001", candidate_prompt_hash=digest, force=False
+            )
+
+    sidecar.write_text(json.dumps({"fingerprint": "nope", "meta": {}}), encoding="utf-8")
+    assert load_run_source_payload(tmp_path, "run-0001") is None
+    with pytest.raises(VerifyError, match="usable Kitaru sidecar"):
+        build_request(
+            project_root=tmp_path,
+            run_id="run-0001",
+            proposal=proposal,
+            base_directory=tmp_path,
+            source={"fingerprint": "nope", "meta": {}},
+        )
+
+
 def test_verify_cli_refuses_a_stale_proposal_before_kitaru(tmp_path: Path) -> None:
     from tracegrad import cli
 
