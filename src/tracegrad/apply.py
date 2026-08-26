@@ -277,6 +277,29 @@ def snapshot_template(project_root: str | Path, run_id: str, template: Path) -> 
     return target
 
 
+def candidate_prompt(
+    prompt: str,
+    proposal: Proposal,
+    accepted_indices: Iterable[int],
+) -> str:
+    """The text that would be written if these indices were accepted.
+
+    Used by verify (the full proposal) and the apply gate (the selection
+    about to be written) so both hash the same way.
+    """
+
+    selected = sorted({index for index in accepted_indices})
+    for index in selected:
+        if index < 0 or index >= len(proposal.edits):
+            raise ApplyError(f"no such edit index: {index}")
+    accepted = [proposal.edits[index].edit for index in selected]
+    if not accepted:
+        return prompt
+    inventory = build_inventory(prompt)
+    resolution = resolve_edits(inventory, accepted)
+    return apply_resolved(prompt, resolution.resolved)
+
+
 def apply_proposal(
     project_root: str | Path,
     proposal: Proposal,

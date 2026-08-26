@@ -44,6 +44,15 @@ class HarnessPreset(BaseModel):
     enabled: StrictBool = True
 
 
+class KitaruSettings(BaseModel):
+    """Non-secret Kitaru selection.  Credentials stay in ``kitaru login``."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    cohort: StrictStr | None = None
+    evaluation: StrictStr | None = None
+
+
 class TracegradConfig(BaseModel):
     """Validated project configuration loaded from `.tracegradrc`."""
 
@@ -58,6 +67,7 @@ class TracegradConfig(BaseModel):
             "synthesis": HarnessPreset(provider="claude"),
         }
     )
+    kitaru: KitaruSettings = Field(default_factory=KitaruSettings)
 
 
 def _resolve_rc_path(path: str | Path) -> Path:

@@ -8,6 +8,8 @@ The project state lives under ``.tracegrad/``:
 * ``reports/`` — persisted reports;
 * ``runs/<run-id>/resume.json`` — per-run interruption checkpoints;
 * ``snapshots/`` — pre-apply prompt snapshots;
+* ``sources/`` — optional mapped-trace snapshots (JSONL the pipeline already reads);
+* ``verification/`` — persisted replay-verification state;
 * ``.gitignore`` — keeps generated state out of version control.
 """
 
@@ -45,6 +47,8 @@ class StateLayout:
     reports: Path
     snapshots: Path
     runs: Path
+    sources: Path
+    verification: Path
     gitignore: Path
 
     @property
@@ -53,7 +57,14 @@ class StateLayout:
 
     @property
     def data_directories(self) -> tuple[Path, ...]:
-        return (self.distilled, self.ledgers, self.reports, self.snapshots)
+        return (
+            self.distilled,
+            self.ledgers,
+            self.reports,
+            self.snapshots,
+            self.sources,
+            self.verification,
+        )
 
     def resume_path(self, run_id: str) -> Path:
         return self.runs / validate_run_id(run_id) / "resume.json"
@@ -80,6 +91,8 @@ def _layout(project_root: str | Path | StateLayout) -> StateLayout:
         reports=state_root / "reports",
         snapshots=state_root / "snapshots",
         runs=state_root / "runs",
+        sources=state_root / "sources",
+        verification=state_root / "verification",
         gitignore=state_root / ".gitignore",
     )
 
