@@ -25,4 +25,4 @@ Ingest reads **one JSON object per line**. Extra keys are rejected (`extra: forb
 
 Do not emit `null` for required strings. Do not put the judge score in a different shape (`label`, `pass`, nested vendor blobs) — map those in the sidecar.
 
-`FIELD_MAP` in the adapt-in sidecar is **Tracegrad field → foreign dotted path**.
+`FIELD_MAP` in the adapt-in sidecar is **Tracegrad field → foreign dotted path** (e.g. `trace_id` → vendor id path, `input`/`output` → prompt/response paths).

@@ -17,7 +17,7 @@ JSONL shape and ingest drops: [jsonl-contract.md](jsonl-contract.md). Adapter li
 
    Done: that source path is recorded.
 
-3. **Sidecar.** Copy [`../examples/sidecar-adapt-in.py`](../examples/sidecar-adapt-in.py) beside the user repo (or edit their existing adapter). Fill `FIELD_MAP` (Tracegrad field → foreign dotted path): vendor id → `trace_id`, prompt/response → `input`/`output`, judge score + rationale, prompt version → `prompt_hash`. Then:
+3. **Sidecar.** Copy [`../examples/sidecar-adapt-in.py`](../examples/sidecar-adapt-in.py) beside the user repo (or edit their existing adapter). Fill `FIELD_MAP` (Tracegrad field → foreign dotted path): `trace_id` → vendor id path, `input`/`output` → prompt/response paths, `judge.score`/`judge.rationale` → score/rationale paths, `prompt_hash` → prompt-version path. Then:
 
    ```sh
    python sidecar-adapt-in.py --source /path/to/user-export --out batch.jsonl
