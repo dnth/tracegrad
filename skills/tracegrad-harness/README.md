@@ -54,8 +54,9 @@ is an extra, agent-side gate on whether the skill may invoke `tracegrad apply`.
 Shape (see [`examples/policy.commented.toml`](examples/policy.commented.toml)):
 
 - `unattended_apply` — default **false**. Off means stop and ask.
-- `accept` — comma-style list of card indices for `tracegrad apply --accept`.
-  Empty, omitted, or guessed → do not apply.
+- `accept` — list of integers (TOML array, e.g. `accept = [0, 2]`). The CLI
+  flag is still comma-separated: `tracegrad apply --accept 0,2`. Empty,
+  omitted, or guessed → do not apply.
 - `allow_delete` — default **false**. Skip or refuse `DELETE` edits.
 - `neverDelete` — instruction ids the agent must not apply, even if they
   survived core gates. Complements `.tracegradrc`; does not replace it.
@@ -64,8 +65,8 @@ Shape (see [`examples/policy.commented.toml`](examples/policy.commented.toml)):
 
 If the file is missing, `unattended_apply` is false, `accept` is empty, or any
 rule is ambiguous: **do not apply unattended** — stop and ask. A human may
-still name indices for attended `--accept`. Never pass `--all` unless the
-policy explicitly lists every index a human already named.
+still name indices for attended `--accept`. Never pass `--all`; always pass
+the explicit `--accept` list.
 
 ## Adapters stay outside core
 

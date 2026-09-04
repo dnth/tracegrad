@@ -82,10 +82,14 @@ prompt store into `src/tracegrad/`.
 
 ## Exact CLI
 
-Export is not a Tracegrad subcommand. Apply (already done, other skill):
+Export is not a Tracegrad subcommand. Do **not** call `tracegrad apply` here
+(that is `review-edits`, and only with `--accept <HUMAN_OR_POLICY_INDICES>`
+after those indices were supplied).
 
 ```sh
-tracegrad apply --accept 0,2
+python sidecar-adapt-out.py \
+  --from path/from/manifest/prompt.md \
+  --to /path/the/user/app/loads/prompt.md
 ```
 
 Verify after export, if useful:
@@ -94,12 +98,12 @@ Verify after export, if useful:
 tracegrad status --manifest manifest.json
 ```
 
-Do not run:
+Do not run from this skill:
 
 ```sh
 tracegrad run
+tracegrad apply
+tracegrad apply --accept <HUMAN_OR_POLICY_INDICES>
 tracegrad apply --all
 tracegrad apply --revert
 ```
-
-from this skill.

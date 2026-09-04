@@ -28,7 +28,7 @@ import sys
 from pathlib import Path
 from typing import Any, Mapping
 
-# Foreign dotted paths → Tracegrad fields. Edit per project.
+# Tracegrad field → foreign dotted path. Edit per project.
 FIELD_MAP: dict[str, str] = {
     "trace_id": "id",
     "input": "prompt",

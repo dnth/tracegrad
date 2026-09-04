@@ -1,6 +1,6 @@
 ---
 name: review-edits
-description: Show Tracegrad review cards and stop to ask the human. Apply only with tracegrad apply --accept after a human names indices, or when a policy file lists them. Never answer interactive y/N. Never invent --accept indices. Never use bare apply.
+description: Show Tracegrad review cards and stop to ask the human. Apply only with tracegrad apply --accept after a human names indices, or when a policy file lists them. Never answer interactive y/N. Never invent --accept indices. Never use bare apply or --all.
 ---
 
 # Review edits
@@ -10,10 +10,11 @@ unattended apply is off unless a policy file is present **and** permits it.
 Attended apply is allowed after the human names card indices.
 
 Only `tracegrad apply --accept <indices>` writes the prompt on the harness
-path. Do not edit the template by hand to "save a step". Do not pass `--all`
-unless a human-named policy lists every index. **Do not run bare
-`tracegrad apply`.** That form is interactive `[y/N]` per card; a TTY agent
-can answer those prompts itself. That is not a human-named accept.
+path. Do not edit the template by hand to "save a step". **Never pass
+`--all`.** Always pass the explicit `--accept` list (human-named or
+policy-listed). **Do not run bare `tracegrad apply`.** That form is
+interactive `[y/N]` per card; a TTY agent can answer those prompts itself.
+That is not a human-named accept.
 
 ## When to use
 
@@ -77,8 +78,8 @@ apply still requires explicit human-named `--accept` indices.
    tracegrad apply --run-id run-0001 --accept <HUMAN_OR_POLICY_INDICES>
    ```
 
-5. If any check fails or is ambiguous: **stop and ask**. Do not fall back to
-   `--all`. Do not apply a subset the policy did not name.
+5. If any check fails or is ambiguous: **stop and ask**. Never `--all`. Do
+   not apply a subset the policy did not name.
 
 ## Policy vs `.tracegradrc`
 
@@ -129,7 +130,7 @@ Do not revert as part of ordinary review.
 | "template changed … proposal is stale" | Do not `--force` apply. Re-run `propose-edits`. |
 | Non-TTY, no `--accept` | Nothing applied. Ask the human; do not switch to `--all`. |
 | TTY offers `[y/N]` / bare `tracegrad apply` | Do not answer. Stop and collect indices, then `--accept` only. |
-| `--all` looks convenient | Forbidden unless the policy's `accept` list is exactly every index a human already approved. Prefer `--accept` with that list. |
+| `--all` looks convenient | Never. Always pass `--accept` with the explicit human- or policy-named list. |
 
 ## Exact CLI
 
