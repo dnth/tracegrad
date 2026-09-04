@@ -6,10 +6,13 @@ import pytest
 
 from tracegrad.apply import (
     ApplyError,
+    Proposal,
+    ProposedEdit,
     StaleProposalError,
     applied_history,
     apply_proposal,
     build_proposal,
+    candidate_prompt,
     current_baseline,
     is_stale,
     latest_run_id,
@@ -20,7 +23,7 @@ from tracegrad.apply import (
 )
 from tracegrad.canonical import text_hash
 from tracegrad.distill import DistillConfig, distill_trace
-from tracegrad.edits import resolve_edits
+from tracegrad.edits import REASON_UNKNOWN_ANCHOR, resolve_edits
 from tracegrad.gates import GateFlag, GateOutcome
 from tracegrad.inventory import build_inventory
 from tracegrad.schema import AttributionResult, Edit, Trace
@@ -149,6 +152,47 @@ def test_proposal_round_trips_through_disk(tmp_path: Path) -> None:
 def test_loading_an_unknown_run_is_an_apply_error(tmp_path: Path) -> None:
     with pytest.raises(ApplyError):
         load_proposal(tmp_path, "run-9999")
+
+
+def test_apply_proposal_writes_the_same_text_as_candidate_prompt(tmp_path: Path) -> None:
+    template = _template(tmp_path)
+    outcome, _ = _outcome()
+    proposal = build_proposal(
+        run_id="run-0001", template_file="prompt.md", prompt=PROMPT, outcome=outcome
+    )
+    expected = candidate_prompt(PROMPT, proposal, [0])
+
+    result = apply_proposal(tmp_path, proposal, [0], base_directory=tmp_path)
+
+    assert template.read_text(encoding="utf-8") == expected
+    assert result.applied_prompt_hash == text_hash(expected)
+    assert result.unchanged is False
+
+
+def test_apply_proposal_records_resolution_rejections(tmp_path: Path) -> None:
+    template = _template(tmp_path)
+    inventory = build_inventory(PROMPT)
+    good = _edit(inventory.instructions[-1].instruction_id)
+    bad = _edit("i-missingxxx-99", "Ghost.")
+    proposal = Proposal(
+        run_id="run-0001",
+        template_file="prompt.md",
+        base_prompt_hash=text_hash(PROMPT),
+        edits=[
+            ProposedEdit(edit=good, before="Cite the doc.", after="Always cite the doc."),
+            ProposedEdit(edit=bad, before="", after="Ghost."),
+        ],
+    )
+
+    written = apply_proposal(tmp_path, proposal, [0, 1], base_directory=tmp_path)
+    assert written.unchanged is False
+    assert REASON_UNKNOWN_ANCHOR in written.resolution_rejections
+    assert template.read_text(encoding="utf-8") == candidate_prompt(PROMPT, proposal, [0, 1])
+
+    template.write_text(PROMPT, encoding="utf-8")
+    unchanged = apply_proposal(tmp_path, proposal, [1], base_directory=tmp_path)
+    assert unchanged.unchanged is True
+    assert unchanged.resolution_rejections == (REASON_UNKNOWN_ANCHOR,)
 
 
 def test_apply_writes_the_template_and_records_the_baseline(tmp_path: Path) -> None:

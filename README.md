@@ -78,8 +78,15 @@ tracegrad init
 tracegrad run --traces batch.jsonl --manifest manifest.json --estimate  # cost preview
 tracegrad run --traces batch.jsonl --manifest manifest.json             # analyze, propose
 tracegrad apply                                                         # review, accept/reject
+tracegrad trends                                                        # last two runs
 tracegrad status                                                        # budget, trends, ledgers
 ```
+
+Core-only install has no Kitaru package, server, worker, or observability
+integration. `run --traces`, `apply`, and `trends` work without it.
+`tracegrad verify` without a backend prints an actionable message and exits
+non-zero — a verify that exits 0 having done nothing would read as verified
+in CI.
 
 `run` prints one review card per proposed edit — the diff, the verbatim quotes
 behind it, and any flags — and writes the proposal to `.tracegrad/`. Nothing
@@ -95,6 +102,68 @@ the last two runs.
 
 Attribution is one model call per trace, so `run --jobs 8` is worth setting on
 any batch above a handful of traces.
+
+### Optional: Kitaru as a trace source and replay backend
+
+Kitaru is an **optional extra**, pinned `kitaru>=0.22,<0.23`. The base package
+has no Kitaru dependency; `import tracegrad` never requires it. The extra
+installs a **client**. It does not install verification — replays run on a
+worker in *your* agent virtualenv. tracegrad stores no Kitaru secrets; use
+`kitaru login`.
+
+```sh
+uv tool install "tracegrad[kitaru]"
+# from this repo until PyPI:
+#   uv tool install "git+https://github.com/dnth/tracegrad[kitaru]"
+kitaru login
+```
+
+`.tracegradrc` may hold only non-secret selection; flags override:
+
+```toml
+[kitaru]
+cohort = "support-production"
+evaluation = "quality"
+```
+
+`--source kitaru` is a fetch-and-map: it writes JSONL the existing pipeline
+already reads, then ingest runs unchanged. `--traces` and `--source kitaru`
+are mutually exclusive. `engine = "format"` manifests are refused with a
+named error. Mapped traces and a source fingerprint are snapshotted under
+`.tracegrad/sources/kitaru/` before ingest; re-runs read the snapshot;
+`--refresh` refetches. The cohort version is resolved once per run.
+
+```sh
+tracegrad run \
+  --source kitaru \
+  --kitaru-cohort support-production \
+  --kitaru-evaluation quality \
+  --manifest manifest.json
+```
+
+`judge_fingerprint` is derived from the evaluator (`quality@3`). A conflicting
+manifest value is an error. Set the manifest fingerprint to that derived
+identity.
+
+After a proposal, verify the candidate against the same frozen cohort. This
+needs a running Kitaru server, a worker in the agent's virtualenv, and a
+registered agent version:
+
+```sh
+tracegrad verify --backend kitaru --run run-0001
+tracegrad apply --all
+```
+
+`apply` then refuses unless a persisted verification exists whose
+`candidate_prompt_hash` matches what is about to be written. `--force`
+overrides. Core-only JSONL users are unaffected. The verification report
+never prints `SHIP` and never applies or reverts on its own.
+
+Every tracegrad-created replay sets recorded tool history with `on_miss=fail`.
+Passthrough is not reachable through the tracegrad path.
+
+`trends` stays in core either way: without Kitaru it is the next-batch check
+after deploy; with Kitaru it confirms a replay-verified change in real traffic.
 
 ### Try it on the bundled example
 
@@ -165,8 +234,10 @@ tracegrad reads an optional TOML file named `.tracegradrc` from the project root
 If it is absent, `neverDelete = []`, `minEffect = 0.05`, `minCoverage = 0.8`,
 and `convergenceRuns = 2` apply. The default attribution and synthesis harness
 providers are `openai` and `claude`. The supported top-level keys are
-`neverDelete`, `minEffect`, `minCoverage`, `convergenceRuns`, and
-`harness_presets`; see the package configuration model for the preset fields.
+`neverDelete`, `minEffect`, `minCoverage`, `convergenceRuns`,
+`harness_presets`, and `kitaru`; see the package configuration model for the
+preset fields. The `[kitaru]` table holds only non-secret selection (`cohort`,
+`evaluation`); credentials stay in `kitaru login`.
 
 ```toml
 neverDelete = ["prompt/identity"]
@@ -202,11 +273,13 @@ measured it.
 
 ```
 .tracegrad/
-  distilled/    content-addressed distilled traces — the only text a quote may cite
-  ledgers/      append-only JSONL: runs, gaps, rejections, applied edits
-  reports/      per-run theme counts, the input to trend comparison
-  runs/         per-run proposal, resume checkpoint, and autopsy of dropped proposals
-  snapshots/    the prompt as it was before each apply
+  distilled/      content-addressed distilled traces — the only text a quote may cite
+  ledgers/        append-only JSONL: runs, gaps, rejections, applied edits
+  reports/        per-run theme counts, the input to trend comparison
+  runs/           per-run proposal, resume checkpoint, and autopsy of dropped proposals
+  snapshots/      the prompt as it was before each apply
+  sources/        optional mapped JSONL from `--source kitaru`, plus the source fingerprint
+  verification/   persisted replay-verification state (resume-safe)
 ```
 
 Everything except `apply` only reads and appends. A killed run resumes from its

@@ -6,6 +6,10 @@ layer across the determinism boundary, so the *shape* lives here, on the
 deterministic side, and the implementations live in ``llm``.
 
 Nothing in this module can talk to anything.  That is the point.
+
+``VerificationBackend`` is the same idea for Phase 2 (ADR 0010): the
+orchestrator holds a backend without becoming backend-aware.  The Kitaru
+implementation lives under ``integrations/kitaru/``.
 """
 
 from __future__ import annotations
@@ -28,3 +32,16 @@ class Backend(Protocol):
         schema: Mapping[str, Any] | None = None,
         timeout: float | None = None,
     ) -> Any: ...
+
+
+@runtime_checkable
+class VerificationBackend(Protocol):
+    """Replay-verify a candidate without the orchestrator knowing the vendor."""
+
+    name: str
+
+    def preflight(self, request: Any) -> None: ...
+
+    def submit(self, request: Any) -> Any: ...
+
+    def collect(self, request: Any, submitted: Any) -> Any: ...

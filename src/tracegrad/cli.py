@@ -19,6 +19,7 @@ from .apply import (
     ApplyError,
     Proposal,
     apply_proposal,
+    candidate_prompt,
     is_stale,
     latest_run_id,
     load_proposal,
@@ -32,10 +33,16 @@ from .attribute import (
     attribute_batch,
     resolve_attribution_backend,
 )
+from .canonical import text_hash
 from .config import ConfigError, load_config
 from .distill import DistillConfig, DistillError, distill_batch, render_manifest_prompt, store_batch
 from .gates import REJECTION_MEMORY_FILENAME, RejectionMemory, measure_tokens
 from .ingest import IngestError, ingest_traces
+from .integrations.kitaru.errors import (
+    NO_BACKEND_MESSAGE,
+    KitaruError,
+    KitaruSourceError,
+)
 from .inventory import InventoryError, build_inventory
 from .pipeline import (
     RUN_LEDGER_FILENAME,
@@ -49,8 +56,58 @@ from .schema import Report
 from .state import StateError, initialize, load_jsonl
 from .synthesize import SynthesisError
 from .trends import compare, convergence, format_trend, hysteresis
+from .verify import VerifyError
 
 DEFAULT_RUN_ID_PREFIX = "run"
+
+
+def _resolve_traces_argument(
+    args: argparse.Namespace,
+    out: TextIO,
+    *,
+    run_id: str | None = None,
+) -> str | Path:
+    """JSONL path the existing pipeline reads.  ``--source kitaru`` snapshots first."""
+
+    traces = getattr(args, "traces", None)
+    source = getattr(args, "source", None)
+    if traces and source:
+        raise KitaruSourceError("--traces and --source are mutually exclusive")
+    if not traces and not source:
+        raise KitaruSourceError("provide --traces or --source kitaru")
+    if source is None:
+        return traces
+    if source != "kitaru":
+        raise KitaruSourceError(f"unknown --source {source!r}; only 'kitaru' is supported")
+
+    from .integrations.kitaru.require import require_kitaru
+
+    require_kitaru()
+    config = load_config(args.project_root)
+    cohort = getattr(args, "kitaru_cohort", None) or config.kitaru.cohort
+    evaluation = getattr(args, "kitaru_evaluation", None) or config.kitaru.evaluation
+    if not cohort or not evaluation:
+        raise KitaruSourceError(
+            "--source kitaru requires --kitaru-cohort and --kitaru-evaluation "
+            "(or kitaru.cohort / kitaru.evaluation in .tracegradrc)"
+        )
+    from .integrations.kitaru.source import prepare_kitaru_source
+
+    prepared = prepare_kitaru_source(
+        project_root=args.project_root,
+        manifest=load_manifest(args.manifest),
+        cohort_name=cohort,
+        evaluation_name=evaluation,
+        cohort_version=getattr(args, "kitaru_cohort_version", None),
+        refresh=bool(getattr(args, "refresh", False)),
+        run_id=run_id,
+    )
+    print(prepared.source_table, file=out)
+    if prepared.refreshed:
+        print("kitaru snapshot written; re-runs read it until --refresh", file=out)
+    else:
+        print("kitaru snapshot reused (pass --refresh to refetch)", file=out)
+    return prepared.traces_path
 
 
 def _next_run_id(project_root: str | Path) -> str:
@@ -92,9 +149,11 @@ def command_init(args: argparse.Namespace, out: TextIO) -> int:
 
 
 def command_run(args: argparse.Namespace, out: TextIO) -> int:
+    run_id = None if args.estimate else (args.run_id or _next_run_id(args.project_root))
+    traces = _resolve_traces_argument(args, out, run_id=run_id)
     if args.estimate:
         estimate = estimate_run(
-            args.traces,
+            traces,
             args.manifest,
             project_root=args.project_root,
             base_directory=args.base_directory,
@@ -102,9 +161,9 @@ def command_run(args: argparse.Namespace, out: TextIO) -> int:
         print(estimate.render(), file=out)
         return 0
 
-    run_id = args.run_id or _next_run_id(args.project_root)
+    assert run_id is not None
     result = run_pipeline(
-        args.traces,
+        traces,
         args.manifest,
         run_id=run_id,
         project_root=args.project_root,
@@ -277,6 +336,20 @@ def command_apply(args: argparse.Namespace, out: TextIO) -> int:
     selected = _selected_indices(args, proposal, out)
     if selected is None:
         return 1
+    from .state import contained_path
+
+    template = contained_path(args.base_directory, proposal.template_file)
+    current = template.read_text(encoding="utf-8")
+    if selected:
+        about_to_write = candidate_prompt(current, proposal, selected)
+        from .verify import refuse_ungated_apply
+
+        refuse_ungated_apply(
+            args.project_root,
+            run_id=run_id,
+            candidate_prompt_hash=text_hash(about_to_write),
+            force=bool(args.force),
+        )
     result = apply_proposal(
         args.project_root,
         proposal,
@@ -353,6 +426,79 @@ def command_status(args: argparse.Namespace, out: TextIO) -> int:
     return 0
 
 
+def command_verify(args: argparse.Namespace, out: TextIO) -> int:
+    """Replay a candidate against the frozen cohort that produced the run."""
+
+    backend_name = getattr(args, "backend", None)
+    if not backend_name:
+        print(NO_BACKEND_MESSAGE, file=out)
+        return 1
+    if backend_name != "kitaru":
+        print(
+            f"unknown verification backend {backend_name!r}; only 'kitaru' is supported",
+            file=out,
+        )
+        return 1
+
+    from .verify import (
+        build_request,
+        format_verification_report,
+        load_run_source_payload,
+        run_verification,
+    )
+
+    run_id = args.run_id or latest_run_id(args.project_root)
+    if run_id is None:
+        print("no run to verify; run tracegrad run first", file=out)
+        return 1
+    source = load_run_source_payload(args.project_root, run_id)
+    if source is None:
+        raise VerifyError(
+            f"run {run_id} has no Kitaru source metadata. "
+            "verify reuses the cohort the originating --source kitaru run persisted."
+        )
+    proposal = load_proposal(args.project_root, run_id)
+    if is_stale(proposal, base_directory=args.base_directory):
+        mark_stale(args.project_root, run_id)
+        print(
+            f"{proposal.template_file} changed since run {run_id}; "
+            "the proposal is stale — re-run tracegrad",
+            file=out,
+        )
+        return 1
+    request = build_request(
+        project_root=args.project_root,
+        run_id=run_id,
+        proposal=proposal,
+        base_directory=args.base_directory,
+        source=source,
+    )
+    from .integrations.kitaru.backend import KitaruVerificationBackend
+
+    result = run_verification(args.project_root, request, KitaruVerificationBackend())
+    from .integrations.kitaru.client import configured_server_url
+
+    print(
+        format_verification_report(
+            result, request, server_url=configured_server_url()
+        ),
+        file=out,
+    )
+    return verify_exit_code(result.status)
+
+
+def verify_exit_code(status: str) -> int:
+    """Process exit for a finished verify.
+
+    0 only when the replay ``completed``. Partial, canceled, failed, and
+    incomplete stay non-zero so ``verify && apply`` cannot write from a
+    half-run. Apply after REVIEW is a separate hash+cohort / ``--force``
+    decision.
+    """
+
+    return 0 if status == "completed" else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="tracegrad",
@@ -381,7 +527,29 @@ def build_parser() -> argparse.ArgumentParser:
         ("propose", command_propose, "propose edits, reusing cached attributions"),
     ):
         run_parser = subparsers.add_parser(name, parents=[common], help=help_text)
-        run_parser.add_argument("--traces", required=True, help="JSONL trace export")
+        run_parser.add_argument("--traces", default=None, help="JSONL trace export")
+        run_parser.add_argument(
+            "--source",
+            choices=["kitaru"],
+            default=None,
+            help="optional trace source; mutually exclusive with --traces",
+        )
+        run_parser.add_argument("--kitaru-cohort", default=None, help="Kitaru cohort name")
+        run_parser.add_argument(
+            "--kitaru-evaluation",
+            default=None,
+            help="Kitaru evaluation name to map onto judge.score",
+        )
+        run_parser.add_argument(
+            "--kitaru-cohort-version",
+            default=None,
+            help="immutable cohort version id, display version, or number",
+        )
+        run_parser.add_argument(
+            "--refresh",
+            action="store_true",
+            help="refetch the Kitaru cohort instead of reusing the snapshot",
+        )
         run_parser.add_argument("--manifest", required=True, help="run manifest JSON")
         run_parser.add_argument("--run-id", default=None)
         run_parser.add_argument("--session-id", default=None)
@@ -421,7 +589,7 @@ def build_parser() -> argparse.ArgumentParser:
     apply_parser.add_argument(
         "--force",
         action="store_true",
-        help="revert even though the template changed after it was applied",
+        help="override the verification gate, or revert even though the template changed",
     )
     apply_parser.set_defaults(handler=command_apply)
 
@@ -430,6 +598,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     status_parser.add_argument("--manifest", default=None)
     status_parser.set_defaults(handler=command_status)
+
+    verify_parser = subparsers.add_parser(
+        "verify",
+        parents=[common],
+        help="replay-verify a candidate against a frozen Kitaru cohort",
+    )
+    verify_parser.add_argument(
+        "--backend",
+        default=None,
+        help="verification backend (kitaru). Required; without one, verify exits non-zero",
+    )
+    verify_parser.add_argument("--run", dest="run_id", default=None, help="tracegrad run id")
+    verify_parser.set_defaults(handler=command_verify)
 
     return parser
 
@@ -446,10 +627,12 @@ def main(argv: Sequence[str] | None = None, out: TextIO | None = None) -> int:
         DistillError,
         IngestError,
         InventoryError,
+        KitaruError,
         LLMError,
         PipelineError,
         StateError,
         SynthesisError,
+        VerifyError,
     ) as exc:
         print(f"tracegrad: {exc}", file=sys.stderr)
         return 1

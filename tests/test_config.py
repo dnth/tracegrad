@@ -47,6 +47,21 @@ model = "gpt-test"
     assert config.harness_presets["remote"].model == "gpt-test"
 
 
+def test_kitaru_selection_parses_from_rc(tmp_path: Path) -> None:
+    (tmp_path / ".tracegradrc").write_text(
+        """
+[kitaru]
+cohort = "support-production"
+evaluation = "quality"
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    config = load_config(tmp_path)
+    assert config.kitaru.cohort == "support-production"
+    assert config.kitaru.evaluation == "quality"
+
+
 def test_malformed_toml_is_rejected_with_filename(tmp_path: Path) -> None:
     rc = tmp_path / ".tracegradrc"
     rc.write_text("minEffect = [", encoding="utf-8")

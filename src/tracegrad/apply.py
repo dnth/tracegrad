@@ -277,6 +277,47 @@ def snapshot_template(project_root: str | Path, run_id: str, template: Path) -> 
     return target
 
 
+def _candidate_text_and_rejections(
+    prompt: str,
+    proposal: Proposal,
+    accepted_indices: Iterable[int],
+) -> tuple[str, tuple[str, ...]]:
+    """The text that would be written, plus resolve_edits rejection reasons.
+
+    One path for verify, the apply gate, and apply_proposal so the ADR 0009
+    hash is the bytes that land on disk, and ApplyResult still sees rejections.
+    """
+
+    selected = sorted({index for index in accepted_indices})
+    for index in selected:
+        if index < 0 or index >= len(proposal.edits):
+            raise ApplyError(f"no such edit index: {index}")
+    accepted = [proposal.edits[index].edit for index in selected]
+    if not accepted:
+        return prompt, ()
+    inventory = build_inventory(prompt)
+    resolution = resolve_edits(inventory, accepted)
+    return (
+        apply_resolved(prompt, resolution.resolved),
+        tuple(item.reason for item in resolution.rejected),
+    )
+
+
+def candidate_prompt(
+    prompt: str,
+    proposal: Proposal,
+    accepted_indices: Iterable[int],
+) -> str:
+    """The text that would be written if these indices were accepted.
+
+    Used by verify, the apply gate, and apply_proposal so the ADR 0009 hash
+    gate hashes the same bytes that are written.
+    """
+
+    text, _rejections = _candidate_text_and_rejections(prompt, proposal, accepted_indices)
+    return text
+
+
 def apply_proposal(
     project_root: str | Path,
     proposal: Proposal,
@@ -306,28 +347,17 @@ def apply_proposal(
         )
 
     selected = sorted({index for index in accepted_indices})
-    for index in selected:
-        if index < 0 or index >= len(proposal.edits):
-            raise ApplyError(f"no such edit index: {index}")
-
+    # ADR 0009's hash gate is only sound if apply writes the same bytes verify
+    # hashed. _candidate_text_and_rejections is that shared path.
+    updated, resolution_rejections = _candidate_text_and_rejections(
+        current, proposal, selected
+    )
+    selected_set = set(selected)
     accepted = [proposal.edits[index].edit for index in selected]
     rejected = [
-        item.edit for index, item in enumerate(proposal.edits) if index not in set(selected)
+        item.edit for index, item in enumerate(proposal.edits) if index not in selected_set
     ]
 
-    if not accepted:
-        return ApplyResult(
-            template_file=template,
-            applied_prompt_hash=text_hash(current),
-            accepted=(),
-            rejected=tuple(rejected),
-            snapshot=None,
-            unchanged=True,
-        )
-
-    inventory = build_inventory(current)
-    resolution = resolve_edits(inventory, accepted)
-    updated = apply_resolved(current, resolution.resolved)
     if updated == current:
         return ApplyResult(
             template_file=template,
@@ -336,7 +366,7 @@ def apply_proposal(
             rejected=tuple(rejected),
             snapshot=None,
             unchanged=True,
-            resolution_rejections=tuple(item.reason for item in resolution.rejected),
+            resolution_rejections=resolution_rejections,
         )
 
     snapshot = snapshot_template(project_root, proposal.run_id, template)
@@ -364,7 +394,7 @@ def apply_proposal(
         accepted=tuple(accepted),
         rejected=tuple(rejected),
         snapshot=snapshot,
-        resolution_rejections=tuple(item.reason for item in resolution.rejected),
+        resolution_rejections=resolution_rejections,
     )
 
 
