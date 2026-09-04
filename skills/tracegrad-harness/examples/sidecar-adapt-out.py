@@ -3,6 +3,7 @@
 
 Run only after `tracegrad apply` has written the manifest template.
 Copy this file next to the user repo. Do not move it into src/tracegrad/.
+This adapter does not apply edits and does not invent a destination.
 
 If --from and --to are the same path, this is a no-op. That is the usual
 case when the app already loads the manifest `template_file`.

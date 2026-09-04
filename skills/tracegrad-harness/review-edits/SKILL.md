@@ -1,155 +1,70 @@
 ---
 name: review-edits
-description: Show Tracegrad review cards and stop to ask the human. Apply only with tracegrad apply --accept after a human names indices, or when a policy file lists them. Never answer interactive y/N. Never invent --accept indices. Never use bare apply or --all.
+description: "Policy gate: show cards, then tracegrad apply --accept <HUMAN_OR_POLICY_INDICES> after a human or policy names those indices."
 ---
 
 # Review edits
 
-Show the cards from the latest proposal. **Default: stop and ask.** Fully
-unattended apply is off unless a policy file is present **and** permits it.
-Attended apply is allowed after the human names card indices.
+Show the cards from the latest proposal. Default: stop and ask.
 
-Only `tracegrad apply --accept <indices>` writes the prompt on the harness
-path. Do not edit the template by hand to "save a step". **Never pass
-`--all`.** Always pass the explicit `--accept` list (human-named or
-policy-listed). **Do not run bare `tracegrad apply`.** That form is
-interactive `[y/N]` per card; a TTY agent can answer those prompts itself.
-That is not a human-named accept.
+## Apply gate
 
-## When to use
+The prompt is written only by:
 
-- After `propose-edits`, when cards exist under `.tracegrad/`.
-- The user asks to review, accept, reject, or apply.
-- `next-batch` reaches the review step.
+```sh
+tracegrad apply --accept <HUMAN_OR_POLICY_INDICES>
+```
 
-Do not use this skill to re-run attribution or to export; those are other
-skills. Do not apply unattended if policy is missing or ambiguous. Attended
-apply still requires explicit human-named `--accept` indices.
+after those indices exist (human-typed this turn, or policy `accept` after every check below passes). Replace the placeholder with those integers — it is not a list. Join them with commas (`tracegrad apply --help` for `--run-id` and location flags).
+
+Pair with that path: do not run bare `tracegrad apply` (interactive `[y/N]` per card — do not answer it, do not pipe `yes`). Do not pass `--all`. Do not invent or extend the index list. Do not edit the template by hand. Non-TTY without `--accept` applies nothing (exit 1) — collect indices and retry with `--accept`.
+
+Core does **not** load the apply policy. Core still only reads `.tracegradrc` (`neverDelete`, coverage, harness presets). The policy is an agent-side gate on whether this skill may invoke apply. Path: the file the user named, else `tracegrad-apply-policy.toml` at the project root if present. Shape: [`../examples/policy.commented.toml`](../examples/policy.commented.toml). `accept` is a TOML integer array; pass the same integers as comma-separated `--accept`.
+
+Unattended apply runs only when **every** check holds:
+
+- File exists and parses.
+- `unattended_apply` is explicitly `true` (example default is **false**).
+- `accept` is a non-empty list of integer indices that exist on **this** proposal. Never invent or extend that list.
+- Each selected edit is allowed: not `DELETE` unless `allow_delete = true`; instruction id not in policy `neverDelete` (this list complements rc `neverDelete`; it does not replace it).
+- If `token_ceiling` is set, proposal `tokens_after` does not exceed it.
+- Indices still match this proposal (policy `run_id` if set; template hash not stale).
+
+Any miss or ambiguity → stop and ask. A human may still name indices for attended `--accept`. Policy missing or `unattended_apply` false blocks only the unattended path.
 
 ## Steps
 
-1. Find the proposal. Latest run id is the sorted name under
-   `.tracegrad/runs/*/proposal.json`. Or pass `--run-id` the user named.
+1. **Locate the proposal.** Latest run id is the sorted name under `.tracegrad/runs/*/proposal.json`, or the `--run-id` the user named.
 
-2. Show every card to the human: index, `ADD`/`REWRITE`/`DELETE`, instruction
-   id, theme, flags, unified diff, verbatim quotes. Prefer the cards already
-   printed by `tracegrad run`. Re-read `proposal.json` if the terminal scroll
-   is gone. Do not call `apply --all` in order to "see" the result.
+   Done: that `proposal.json` exists. If none, send the user to `propose-edits` (`tracegrad apply` would exit 1).
 
-3. **Default path — stop and ask.** List the card indices and wait. Do not
-   call `tracegrad apply` yet. Do not answer `[y/N]`. A human must type which
-   cards to accept (for example `0` and `2`). Only after those indices exist
-   in this conversation, substitute them and run:
+2. **Show every card.** Index, `ADD`/`REWRITE`/`DELETE`, instruction id, theme, flags, unified diff, verbatim quotes. Prefer stdout from `tracegrad run`. Re-read `proposal.json` if scrollback is gone. Show cards by reading the proposal, not by applying.
 
-   ```sh
-   tracegrad apply --accept <HUMAN_OR_POLICY_INDICES>
-   ```
+   Done: the human has seen every index on this proposal.
 
-   The placeholder is not an example list. Replace it with the integers the
-   human typed (or, on the policy path below, the integers the file listed).
-   **Forbidden for the harness agent:** bare `tracegrad apply`, answering
-   interactive `[y/N]`, piping `yes`/`y` into apply, or using `--all` to skip
-   naming indices. Non-TTY without `--accept`/`--all` applies nothing (exit
-   1); that is correct, not a prompt to guess or to switch to a TTY.
+3. **Collect indices.**
 
-4. **Policy path — optional, gated.** Read the project policy file (see
-   [`../examples/policy.commented.toml`](../examples/policy.commented.toml)).
-   Apply **only** if every condition holds:
+   - **Attended (default):** list the indices and wait. After the human types which cards to accept, those integers are the list.
+   - **Unattended:** read the policy file and run the checks above. The list is policy `accept` unchanged.
 
-   - File exists and parses.
-   - `unattended_apply` is explicitly `true`.
-   - `accept` is a non-empty list of integer indices that exist on this
-     proposal. **Never invent or extend that list.**
-   - Each selected edit is allowed: not `DELETE` unless `allow_delete = true`;
-     instruction id not in policy `neverDelete`; proposal `tokens_after`
-     does not exceed policy `token_ceiling` when that key is set.
-   - Indices still match the current proposal (same `run_id`, template hash
-     not stale).
+   Done: an explicit integer list exists in this turn (human-typed or policy-listed). If not, stop and ask — prompt file unchanged.
 
-   Then, and only then:
+4. **Apply** with that list only:
 
    ```sh
    tracegrad apply --accept <HUMAN_OR_POLICY_INDICES>
    ```
 
-   Use `--run-id` when the policy or user named a run:
+   Stale template (`template changed … proposal is stale`) → do not `--force` apply; re-run `propose-edits`. A policy `neverDelete` hit → drop that index; if the list becomes empty, stop.
 
-   ```sh
-   tracegrad apply --run-id run-0001 --accept <HUMAN_OR_POLICY_INDICES>
-   ```
+   Done: CLI exit 0 and stdout reports accepted count, new prompt hash, and snapshot under `.tracegrad/snapshots/`; or apply was not invoked (stale proposal / empty list) and the prompt file is unchanged.
 
-5. If any check fails or is ambiguous: **stop and ask**. Never `--all`. Do
-   not apply a subset the policy did not name.
+## Revert
 
-## Policy vs `.tracegradrc`
-
-| File | Who reads it |
-| --- | --- |
-| `.tracegradrc` | Tracegrad core (`neverDelete`, coverage, harness presets) |
-| apply policy (this skill) | The harness agent, before it may run `tracegrad apply` |
-
-Core `neverDelete` already drops protected deletes at synthesize time. The
-policy `neverDelete` is a second, agent-side refuse-to-apply list. It does
-not replace the rc file.
-
-## Inputs / outputs
-
-**Inputs**
-
-- `.tracegrad/runs/<run-id>/proposal.json`
-- Optional policy file (path the user named, else
-  `tracegrad-apply-policy.toml` in the project root if present)
-- Optional `--run-id`, `--project-root`, `--base-directory`
-
-**Outputs**
-
-- Review text for the human (always).
-- If apply ran: Tracegrad prints accepted count, new prompt hash, snapshot
-  path under `.tracegrad/snapshots/`.
-- If apply did not run: a clear stop/ask message. Prompt file unchanged.
-
-Revert is a separate, explicit user request:
+Only on an explicit user request to restore the pre-apply snapshot:
 
 ```sh
 tracegrad apply --revert
-tracegrad apply --revert --force
 ```
 
-Do not revert as part of ordinary review.
-
-## Failure modes
-
-| Failure | What to do |
-| --- | --- |
-| No proposal | Tell the user to run `propose-edits` first. `tracegrad apply` exits 1. |
-| Policy missing / `unattended_apply` false / omitted | Do not apply unattended. Stop and ask. Attended `--accept` is allowed if the human named indices. |
-| `accept` empty, omitted, or contains unknown indices | Stop and ask. Never invent. |
-| Selected edit is `DELETE` and `allow_delete` is not true | Skip apply; stop and ask. |
-| Instruction id in policy `neverDelete` | Do not include it in `--accept`. If that empties the list, stop. |
-| `tokens_after` over `token_ceiling` | Stop and ask. |
-| "template changed … proposal is stale" | Do not `--force` apply. Re-run `propose-edits`. |
-| Non-TTY, no `--accept` | Nothing applied. Ask the human; do not switch to `--all`. |
-| TTY offers `[y/N]` / bare `tracegrad apply` | Do not answer. Stop and collect indices, then `--accept` only. |
-| `--all` looks convenient | Never. Always pass `--accept` with the explicit human- or policy-named list. |
-
-## Exact CLI
-
-```sh
-# Harness path — only after human-typed or policy-listed indices replace the placeholder:
-tracegrad apply --accept <HUMAN_OR_POLICY_INDICES>
-tracegrad apply --run-id run-0001 --accept <HUMAN_OR_POLICY_INDICES>
-tracegrad apply --project-root . --base-directory . --accept <HUMAN_OR_POLICY_INDICES>
-# Explicit user request to revert only:
-tracegrad apply --revert
-# Forbidden for the harness agent:
-# tracegrad apply
-# (do not answer interactive [y/N])
-# tracegrad apply --all
-```
-
-Related, not this skill's job:
-
-```sh
-tracegrad status
-tracegrad trends
-```
+`--force` only when they asked to revert despite a later template change. Not part of ordinary review.

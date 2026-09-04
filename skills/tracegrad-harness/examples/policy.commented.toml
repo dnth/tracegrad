@@ -1,13 +1,14 @@
 # Tracegrad harness apply policy — EXAMPLE
 #
-# Read by Claude Code / Pi skill pack (review-edits, next-batch).
+# Agent-side gate for review-edits (next-batch follows that skill).
 # NOT loaded by Tracegrad core. Core still only writes the prompt via
-# `tracegrad apply`, and only for the indices passed to `--accept`.
+# `tracegrad apply --accept <HUMAN_OR_POLICY_INDICES>`.
 #
 # Copy to the project (suggested name: tracegrad-apply-policy.toml) and
 # edit. Unattended apply stays OFF until a human sets unattended_apply
-# and names accept indices. Missing file, false, or ambiguous → the
-# skill stops and asks. Never invent --accept values.
+# and names accept indices. Missing file, false, or ambiguous → stop
+# and ask. A human may still name indices for attended --accept.
+# Never invent --accept values. There is no allow_all.
 
 # Fully unattended apply is OFF by default. Leave this false (or omit it).
 unattended_apply = false

@@ -1,153 +1,39 @@
 ---
 name: next-batch
-description: Conduct one Tracegrad loop — import, estimate, propose, review, maybe export, then status/trends. Unattended apply only if a policy file exists and permits it; otherwise stop at review.
+description: "Batch: one loop of import → estimate → propose → review-edits → adapt-out → status/trends."
 ---
 
 # Next batch
 
-Thin conductor over the other skills. Follow them; do not invent a parallel
-pipeline. Unattended apply is **off** unless a policy file is present **and**
-permits it. Attended apply after explicit human indices is allowed; otherwise
-stop at review and ask.
+Thin conductor. Follow the other skills; do not invent a parallel pipeline. If the user asked for only one step, invoke that skill instead.
 
-`tracegrad run` never writes the prompt. Only `tracegrad apply` does, and only
-after human or policy accept.
-
-## When to use
-
-- The user asks to run the next batch, close the loop, or "do a Tracegrad
-  pass".
-- A new export is ready and they want import through trends in one go.
-
-Do not use when they only asked for one step (import, estimate, review).
-Invoke that skill instead.
+Apply lives in [`../review-edits/SKILL.md`](../review-edits/SKILL.md) (policy gate + attended `--accept`). `tracegrad run` does not write the prompt.
 
 ## Steps
 
-1. **Import** — follow [`../import-traces/SKILL.md`](../import-traces/SKILL.md).
-   Sidecar adapt-in → JSONL. User pipeline unchanged.
+1. **Import.** Follow [`../import-traces/SKILL.md`](../import-traces/SKILL.md).
 
-   ```sh
-   tracegrad init
-   python sidecar-adapt-in.py --source /path/to/user-export --out batch.jsonl
-   ```
+   Done: that skill's JSONL exists with N > 0. Invalid or empty JSONL → stop before `run`.
 
-2. **Estimate** — follow [`../propose-edits/SKILL.md`](../propose-edits/SKILL.md).
+2. **Estimate + propose.** Follow [`../propose-edits/SKILL.md`](../propose-edits/SKILL.md).
 
-   ```sh
-   tracegrad run --traces batch.jsonl --manifest manifest.json --estimate
-   ```
+   Done: `.tracegrad/runs/<run-id>/proposal.json` exists (empty proposal is valid). Unclear spend or missing model → stop and ask.
 
-   If spend is unclear, stop and ask before the paid run.
+3. **Review.** Follow [`../review-edits/SKILL.md`](../review-edits/SKILL.md).
 
-3. **Propose** — same skill. Default:
+   Done: that skill's apply step completed with `--accept`, **or** it stopped at ask and the prompt is unchanged. Stale proposal → re-propose; do not `--force`.
 
-   ```sh
-   tracegrad run --traces batch.jsonl --manifest manifest.json
-   ```
+4. **Export.** Only if apply actually wrote the template. Follow [`../export-prompt/SKILL.md`](../export-prompt/SKILL.md). Skip if apply did not run, or if the user path is already the manifest file.
 
-   Staged alternative:
+   Done: adapt-out ran, was a same-path no-op, or was skipped because apply did not write. Unknown destination after a real apply → ask where to copy; do not revert.
 
-   ```sh
-   tracegrad attribute --traces batch.jsonl --manifest manifest.json
-   tracegrad propose --traces batch.jsonl --manifest manifest.json
-   ```
-
-   Stop with cards on disk under `.tracegrad/runs/<run-id>/`. Do not apply here.
-
-4. **Review** — follow [`../review-edits/SKILL.md`](../review-edits/SKILL.md).
-
-   - Policy file missing, `unattended_apply` not true, `accept` empty, or any
-     rule ambiguous → **stop and ask**. Show the cards. Do not apply
-     unattended.
-   - Human names indices in this conversation → attended apply of **only**
-     those indices.
-   - Policy present **and** permits a specific `--accept` list → unattended
-     apply of **only** those indices.
-
-   ```sh
-   # Run only after HUMAN_OR_POLICY_INDICES is replaced with supplied integers.
-   # Do not substitute example numbers. Do not answer interactive [y/N].
-   tracegrad apply --accept <HUMAN_OR_POLICY_INDICES>
-   ```
-
-   Never invent accepts. Never `--all` as a shortcut.
-
-5. **Export** — only if apply actually wrote the template. Follow
-   [`../export-prompt/SKILL.md`](../export-prompt/SKILL.md).
-
-   ```sh
-   python sidecar-adapt-out.py --from prompt.md --to /user/path/prompt.md
-   ```
-
-   Skip if apply was not run, or if the user path is already the manifest file.
-
-6. **Status / trends**
+5. **Status / trends.**
 
    ```sh
    tracegrad status
-   tracegrad status --manifest manifest.json
    tracegrad trends
    ```
 
-   Trends need at least two runs. Advisory only — never auto-revert.
+   `--manifest` and other flags: `tracegrad status --help` / `tracegrad trends --help`. Trends need at least two runs. Advisory only — do not auto-revert. A changed `judge_fingerprint` makes batches incomparable; report that instead of forcing a delta. Empty proposal → skip apply/export; still run these if two reports exist.
 
-## Unattended apply (strict)
-
-Apply without a human in the loop **only** when all of:
-
-1. A policy file exists (see [`../examples/policy.commented.toml`](../examples/policy.commented.toml)).
-2. `unattended_apply = true` (default in the example is **false**).
-3. `accept` names real card indices; the agent does not fill gaps.
-4. `allow_delete`, `neverDelete`, and `token_ceiling` all pass.
-
-Otherwise the conductor **stops at review**.
-
-## Inputs / outputs
-
-**Inputs**
-
-- User-store location, sidecar paths, JSONL destination, manifest,
-  `--project-root` / `--base-directory`.
-- Optional policy file. Absence is a valid input: it means stop at review.
-
-**Outputs**
-
-- JSONL batch, `.tracegrad/` proposal (always if run succeeded).
-- Applied template + adapt-out copy **only** if review allowed apply.
-- Status / trend text. No autonomous revert.
-
-## Failure modes
-
-| Failure | What to do |
-| --- | --- |
-| Import produced empty/invalid JSONL | Stop before `run`. |
-| Estimate too large / no model configured | Stop and ask. |
-| No edits proposed | Skip apply/export; still run `status` / `trends` if two reports exist. |
-| Policy would apply but proposal is stale | Stop. Re-propose; do not `--force`. |
-| Review blocked | Leave the prompt untouched. Report cards and wait. |
-| Export destination unknown after apply | Prompt was still written by apply; ask where to copy. Do not revert. |
-| Second batch with a changed judge fingerprint | Trends may be incomparable; report that instead of forcing a delta. |
-
-## Exact CLI (full sequence)
-
-```sh
-tracegrad init
-# sidecar adapt-in → batch.jsonl
-tracegrad run --traces batch.jsonl --manifest manifest.json --estimate
-tracegrad run --traces batch.jsonl --manifest manifest.json
-# STOP at review. Show cards. Do not apply, and do not invent --accept indices.
-# Apply is not part of this canonical sequence. If a human or policy has
-# already supplied indices, review-edits may run:
-#   tracegrad apply --accept <HUMAN_OR_POLICY_INDICES>
-# sidecar adapt-out only after a real apply
-tracegrad status --manifest manifest.json
-tracegrad trends
-```
-
-Staged variant replaces the paid `run` with:
-
-```sh
-tracegrad attribute --traces batch.jsonl --manifest manifest.json
-tracegrad propose --traces batch.jsonl --manifest manifest.json
-```
+   Done: both CLIs exit 0, or `trends` stated the batches are not comparable.

@@ -3,21 +3,14 @@
 
 Copy this file next to the user repo. Do not move it into src/tracegrad/.
 The user pipeline stays unchanged; this adapter is the only place that
-learns the foreign field names.
+learns the foreign field names. This stub is not a vendor integration.
 
-JSONL contract (one object per line, extra keys forbidden by ingest):
+One JSON object per line; ingest forbids extra keys. Required: trace_id,
+input, output, judge.score in [0, 1], judge.rationale, prompt_hash.
+Optional meta.model. Ingest drops duplicate trace_ids, rationales under
+24 usable characters, and non-dominant prompt_hash.
 
-    {
-      "trace_id": str,
-      "input": str,
-      "output": str,
-      "judge": {"score": float in [0, 1], "rationale": str},
-      "prompt_hash": str,
-      "meta": {"model": str}   # optional
-    }
-
-Fill FIELD_MAP (or --map-json) for the local export. This stub is not a
-vendor integration.
+FIELD_MAP (or --map-json) is Tracegrad field → foreign dotted path.
 """
 
 from __future__ import annotations

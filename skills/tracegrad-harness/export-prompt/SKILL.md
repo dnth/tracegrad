@@ -1,109 +1,36 @@
 ---
 name: export-prompt
-description: After a successful tracegrad apply, copy the written template back to the user path via a sidecar adapt-out. Use when asked to export, sync, or deploy the applied prompt. Does not apply.
+description: "Adapt-out the applied template to a user-named path. Invoke for export after apply. Not apply."
 ---
 
 # Export prompt
 
-Sidecar adapt-out: after `tracegrad apply` has already written the template,
-copy or write that file to the path the user's app actually loads.
+Sidecar adapt-out: copy the template `tracegrad apply` already wrote to the path the user's app loads. Apply is [`../review-edits/SKILL.md`](../review-edits/SKILL.md). Export is not a Tracegrad subcommand.
 
-This skill does **not** apply edits. If apply has not happened, stop and send
-the user to `review-edits`.
-
-## When to use
-
-- Apply succeeded and the production prompt is a *different* path than the
-  manifest `template_file`.
-- The user asks to export, sync, or copy the applied prompt back.
-- `next-batch` reaches the export step after a permitted apply.
-
-Skip (successful no-op) when the manifest path **is** the user path. Do not
-use this skill to bypass the apply gate by writing a "proposed" prompt.
-
-## Sidecar adapt-out
-
-Tracegrad writes the file named in the manifest, resolved against
-`--base-directory`. The adapter lives beside the user repo. Copy
-[`../examples/sidecar-adapt-out.py`](../examples/sidecar-adapt-out.py) and
-point `--from` at the applied template and `--to` at the user path.
-
-```sh
-python sidecar-adapt-out.py \
-  --from path/from/manifest/prompt.md \
-  --to /path/the/user/app/loads/prompt.md
-```
-
-Do not add an export command to Tracegrad core. Do not vendor the user's
-prompt store into `src/tracegrad/`.
+Skip (successful no-op) when the manifest `template_file` **is** the user path. Do not copy a proposed, unapplied template.
 
 ## Steps
 
-1. Confirm apply already happened for this run: new prompt hash on stdout, or
-   an entry in `.tracegrad/ledgers/applied.jsonl`, plus a snapshot under
-   `.tracegrad/snapshots/`. If none, **stop** — export has nothing safe to
-   copy.
+1. **Confirm apply for this run.** Look for a new prompt hash on apply stdout, a new line in `.tracegrad/ledgers/applied.jsonl`, and a snapshot under `.tracegrad/snapshots/`.
 
-2. Resolve the source path: manifest `template_file` + `--base-directory`.
+   Done: at least one of those exists. If none, stop and send the user to `review-edits`.
 
-3. Resolve the destination: only a path the user named (config, flag, or
-   existing sidecar defaults). Do not guess a production path.
+2. **Source.** Resolve manifest `template_file` against the same `--base-directory` used at apply (`tracegrad apply --help`). The source is the path apply printed (`applied … to <template>`).
 
-4. Run the sidecar. Overwrite only that destination.
+   Done: that file exists. If it is missing or was edited after apply, stop — do not copy an out-of-band file.
 
-5. Report source, destination, and that core was not modified.
+3. **Destination.** Use only a path the user named (config, flag, or existing sidecar default). Do not guess a production path.
 
-## Inputs / outputs
+   Done: destination path is explicit.
 
-**Inputs**
+4. **Adapt-out.** Copy [`../examples/sidecar-adapt-out.py`](../examples/sidecar-adapt-out.py) beside the user repo if needed, then:
 
-- Applied template path (manifest `template_file`).
-- User destination path.
-- Sidecar script (example: `examples/sidecar-adapt-out.py`).
-- Optional: `--project-root` / `--base-directory` used during apply, so the
-  same file is found.
+   ```sh
+   python sidecar-adapt-out.py \
+     --from path/from/manifest/prompt.md \
+     --to /path/the/user/app/loads/prompt.md
+   ```
 
-**Outputs**
+   Overwrite only that destination. Same resolved `--from` and `--to` is a no-op (exit 0). Do not vendor a prompt store into `src/tracegrad/`.
 
-- User-path file updated to match the applied template (or no-op if identical
-  path / identical bytes).
-- No Tracegrad state writes. No second apply.
-
-## Failure modes
-
-| Failure | What to do |
-| --- | --- |
-| No apply yet | Stop. Do not copy a pre-apply template and call it exported. |
-| Stale proposal was refused | Nothing to export. Re-run propose + review. |
-| Destination unknown | Stop and ask. |
-| Destination outside what the user named | Refuse. |
-| Apply succeeded but template hash does not match apply output | Stop; do not overwrite the user path with a file that may have been edited out of band. |
-| Urge to `tracegrad apply` "so there is something to export" | Refuse unless `review-edits` policy/human already allowed it. |
-
-## Exact CLI
-
-Export is not a Tracegrad subcommand. Do **not** call `tracegrad apply` here
-(that is `review-edits`, and only with `--accept <HUMAN_OR_POLICY_INDICES>`
-after those indices were supplied).
-
-```sh
-python sidecar-adapt-out.py \
-  --from path/from/manifest/prompt.md \
-  --to /path/the/user/app/loads/prompt.md
-```
-
-Verify after export, if useful:
-
-```sh
-tracegrad status --manifest manifest.json
-```
-
-Do not run from this skill:
-
-```sh
-tracegrad run
-tracegrad apply
-tracegrad apply --accept <HUMAN_OR_POLICY_INDICES>
-tracegrad apply --all
-tracegrad apply --revert
-```
+   Done: sidecar exit 0, and either the destination bytes match the source or the adapter printed the same-path no-op. Report source, destination, and that core was not modified.

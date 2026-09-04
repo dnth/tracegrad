@@ -1,79 +1,35 @@
 # Tracegrad harness skill pack
 
-A verb-first skill pack so Claude Code or Pi can drive Tracegrad from
-**outside** the Python package. Core stays lean and harness-driven. This
-directory is documentation and examples, not a product surface and not a
-dependency.
+Harness loop for Claude Code / Pi. Core stays lean. Sidecars live beside the user repo, never under `src/tracegrad/`. No Kitaru in this pack.
 
-Kitaru is not in core. Do not add Kitaru code, deps, or docs from this pack.
-Adapters live beside the user's repo (sidecar), never under `src/tracegrad/`.
+`tracegrad run` does not write the prompt. Harness apply is only `tracegrad apply --accept <HUMAN_OR_POLICY_INDICES>` after a human or policy names those indices — procedure in [review-edits](review-edits/SKILL.md). Never invent accepts.
 
-## The loop
+CLI flags: `tracegrad <cmd> --help`. Manifest, `.tracegradrc`, and project state: repo README.
 
-1. **Import traces.** A sidecar adapt-in maps the user's existing store into
-   Tracegrad JSONL. Their pipeline does not change. Tracegrad never learns the
-   stack.
-2. **Propose edits.** `tracegrad run --estimate`, then `tracegrad run`. Analysis
-   writes cards and a proposal under `.tracegrad/`. It does **not** write the
-   prompt.
-3. **Review edits.** Default: stop and ask the human. **Unattended** apply
-   needs a local policy file that is present **and** clearly permits it.
-   **Attended** apply is allowed after the human explicitly names card
-   indices (`tracegrad apply --accept …`). Missing or ambiguous policy does
-   not block that attended path; it only forbids applying with no
-   human-named list. Never invent `--accept` indices.
-4. **Export prompt.** After a successful `tracegrad apply`, a sidecar adapt-out
-   copies the written template back to the path the user's app actually loads
-   (no-op if that path already *is* the manifest `template_file`).
-5. **Next batch.** Thin conductor: import → estimate → propose → review →
-   export → `tracegrad status` / `tracegrad trends`. Unattended apply stays
-   off unless the policy file both exists and permits it. Attended apply
-   after explicit human indices is allowed; otherwise stop at review.
+## Loop
 
-The existing gate is unchanged: `tracegrad run` never writes the prompt; only
-`tracegrad apply` does, and only after a human or an explicit policy accept.
+1. [import-traces](import-traces/SKILL.md) — adapt-in a user-named export → JSONL
+2. [propose-edits](propose-edits/SKILL.md) — estimate, then run (or attribute + propose); cards on disk
+3. [review-edits](review-edits/SKILL.md) — show cards; `--accept` after human- or policy-named indices
+4. [export-prompt](export-prompt/SKILL.md) — adapt-out after apply wrote the template
+5. [next-batch](next-batch/SKILL.md) — conductor over 1–4, then `status` / `trends`
 
-## Skills
+## Reach
 
-| Skill | Folder | Does |
-| --- | --- | --- |
-| import traces | [`import-traces/`](import-traces/SKILL.md) | Adapt-in → JSONL |
-| propose edits | [`propose-edits/`](propose-edits/SKILL.md) | Estimate + run (or attribute + propose); stop with cards |
-| review edits | [`review-edits/`](review-edits/SKILL.md) | Show cards; `--accept` only after human or policy names indices |
-| export prompt | [`export-prompt/`](export-prompt/SKILL.md) | Adapt-out after apply |
-| next batch | [`next-batch/`](next-batch/SKILL.md) | Conduct the loop; unattended apply needs policy, else stop at review |
+| Situation | Skill |
+| --- | --- |
+| import traces, adapt-in, JSONL from a store | [import-traces](import-traces/SKILL.md) |
+| estimate, propose, run, attribute | [propose-edits](propose-edits/SKILL.md) |
+| cards, review, accept, apply, policy | [review-edits](review-edits/SKILL.md) |
+| export / adapt-out the applied prompt | [export-prompt](export-prompt/SKILL.md) |
+| next batch, close the loop | [next-batch](next-batch/SKILL.md) |
 
-## Policy file
+JSONL ingest rules: [import-traces/jsonl-contract.md](import-traces/jsonl-contract.md).
 
-The harness agent may read a project-local policy file (suggested name:
-`tracegrad-apply-policy.toml` at the project root, or a path the user names).
-**Tracegrad core does not load this file.** `.tracegradrc` remains the only
-config core reads (`neverDelete`, coverage, harness presets). The policy file
-is an extra, agent-side gate on whether the skill may invoke `tracegrad apply`.
+## Sidecars and policy
 
-Shape (see [`examples/policy.commented.toml`](examples/policy.commented.toml)):
+Copy [examples/](examples/) beside the user repo:
 
-- `unattended_apply` — default **false**. Off means stop and ask.
-- `accept` — list of integers (TOML array, e.g. `accept = [0, 2]`). The CLI
-  flag is still comma-separated: `tracegrad apply --accept 0,2`. Empty,
-  omitted, or guessed → do not apply.
-- `allow_delete` — default **false**. Skip or refuse `DELETE` edits.
-- `neverDelete` — instruction ids the agent must not apply, even if they
-  survived core gates. Complements `.tracegradrc`; does not replace it.
-- `token_ceiling` — if the proposal's `tokens_after` would exceed this, stop
-  and ask rather than apply.
-
-If the file is missing, `unattended_apply` is false, `accept` is empty, or any
-rule is ambiguous: **do not apply unattended** — stop and ask. A human may
-still name indices for attended `--accept`. Never pass `--all`; always pass
-the explicit `--accept` list.
-
-## Adapters stay outside core
-
-Copy the stubs in [`examples/`](examples/) next to the user's repo:
-
-- `sidecar-adapt-in.py` — foreign traces → JSONL contract
+- `sidecar-adapt-in.py` — `FIELD_MAP` = Tracegrad field → foreign path
 - `sidecar-adapt-out.py` — applied template → user path
-
-Do not vendor these into `src/tracegrad/`. Do not add a Kitaru (or any other
-eval-stack) integration to the package to make import/export "just work".
+- `policy.commented.toml` — agent-side apply gate (unattended apply off by default; `accept` is a TOML integer array). Core does not load this file.
