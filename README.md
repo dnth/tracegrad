@@ -86,6 +86,8 @@ behind it, and any flags — and writes the proposal to `.tracegrad/`. Nothing
 touches your prompt until `tracegrad apply`. `apply --revert` restores the
 snapshot taken before the write.
 
+Harness loop (Claude Code / Pi): [`skills/tracegrad-harness/`](skills/tracegrad-harness/).
+
 Two more commands exist for staged use: `tracegrad attribute` runs the paid
 attribution pass alone and caches it, and `tracegrad propose` then produces the
 proposal for the cost of a single synthesis call. `tracegrad trends` compares
