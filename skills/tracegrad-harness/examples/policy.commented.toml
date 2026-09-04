@@ -1,0 +1,38 @@
+# Tracegrad harness apply policy — EXAMPLE
+#
+# Agent-side gate for review-edits (next-batch follows that skill).
+# NOT loaded by Tracegrad core. Core still only writes the prompt via
+# `tracegrad apply --accept <HUMAN_OR_POLICY_INDICES>`.
+#
+# Copy to the project (suggested name: tracegrad-apply-policy.toml) and
+# edit. Unattended apply stays OFF until a human sets unattended_apply
+# and names accept indices. Missing file, false, or ambiguous → stop
+# and ask. A human may still name indices for attended --accept.
+# Never invent --accept values. There is no allow_all.
+
+# Fully unattended apply is OFF by default. Leave this false (or omit it).
+unattended_apply = false
+
+# Card indices for `tracegrad apply --accept`. Empty / omitted / commented
+# means do not apply. The agent must not guess, rank, or "take the safe ones".
+# Example after a human named cards 0 and 2:
+# accept = [0, 2]
+accept = []
+
+# DELETE edits: refuse unless a human explicitly sets this true.
+allow_delete = false
+
+# Instruction ids the agent must not apply, even if they survived core gates.
+# Complements `.tracegradrc` neverDelete (which core already enforces).
+# Example: neverDelete = ["prompt/identity"]
+neverDelete = []
+
+# If the proposal's tokens_after would exceed this, stop and ask.
+# Uncomment and set a positive integer to enable.
+# token_ceiling = 4000
+
+# Optional: pin a run. If omitted, the skill uses the latest proposal.
+# run_id = "run-0001"
+
+# Do not set a flag that means "accept every card". There is no allow_all
+# here on purpose. `tracegrad apply --all` is not a policy default.
