@@ -16,15 +16,19 @@ Adapters live beside the user's repo (sidecar), never under `src/tracegrad/`.
 2. **Propose edits.** `tracegrad run --estimate`, then `tracegrad run`. Analysis
    writes cards and a proposal under `.tracegrad/`. It does **not** write the
    prompt.
-3. **Review edits.** Default: stop and ask the human. Apply only when a local
-   policy file is present **and** clearly permits it. Missing or ambiguous
-   policy → stop and ask. Never invent `--accept` indices.
+3. **Review edits.** Default: stop and ask the human. **Unattended** apply
+   needs a local policy file that is present **and** clearly permits it.
+   **Attended** apply is allowed after the human explicitly names card
+   indices (`tracegrad apply --accept …`). Missing or ambiguous policy does
+   not block that attended path; it only forbids applying with no
+   human-named list. Never invent `--accept` indices.
 4. **Export prompt.** After a successful `tracegrad apply`, a sidecar adapt-out
    copies the written template back to the path the user's app actually loads
    (no-op if that path already *is* the manifest `template_file`).
 5. **Next batch.** Thin conductor: import → estimate → propose → review →
    export → `tracegrad status` / `tracegrad trends`. Unattended apply stays
-   off unless the policy file both exists and permits it.
+   off unless the policy file both exists and permits it. Attended apply
+   after explicit human indices is allowed; otherwise stop at review.
 
 The existing gate is unchanged: `tracegrad run` never writes the prompt; only
 `tracegrad apply` does, and only after a human or an explicit policy accept.
@@ -35,9 +39,9 @@ The existing gate is unchanged: `tracegrad run` never writes the prompt; only
 | --- | --- | --- |
 | import traces | [`import-traces/`](import-traces/SKILL.md) | Adapt-in → JSONL |
 | propose edits | [`propose-edits/`](propose-edits/SKILL.md) | Estimate + run (or attribute + propose); stop with cards |
-| review edits | [`review-edits/`](review-edits/SKILL.md) | Show cards; apply only if policy allows |
+| review edits | [`review-edits/`](review-edits/SKILL.md) | Show cards; `--accept` only after human or policy names indices |
 | export prompt | [`export-prompt/`](export-prompt/SKILL.md) | Adapt-out after apply |
-| next batch | [`next-batch/`](next-batch/SKILL.md) | Conduct the loop; stop at review unless policy permits apply |
+| next batch | [`next-batch/`](next-batch/SKILL.md) | Conduct the loop; unattended apply needs policy, else stop at review |
 
 ## Policy file
 
@@ -59,8 +63,9 @@ Shape (see [`examples/policy.commented.toml`](examples/policy.commented.toml)):
   and ask rather than apply.
 
 If the file is missing, `unattended_apply` is false, `accept` is empty, or any
-rule is ambiguous: **stop and ask**. Never pass `--all` unless the policy
-explicitly lists every index a human already named.
+rule is ambiguous: **do not apply unattended** — stop and ask. A human may
+still name indices for attended `--accept`. Never pass `--all` unless the
+policy explicitly lists every index a human already named.
 
 ## Adapters stay outside core
 

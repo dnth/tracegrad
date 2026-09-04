@@ -108,8 +108,8 @@ python sidecar-adapt-in.py --source /path/to/user-export --out batch.jsonl
 
 ```sh
 tracegrad init
-# Adapt-in is not a tracegrad subcommand. Then, later:
-tracegrad run --traces batch.jsonl --manifest manifest.json --estimate
+# Adapt-in is not a tracegrad subcommand:
+python sidecar-adapt-in.py --source /path/to/user-export --out batch.jsonl
 ```
 
 `tracegrad init` is the only Tracegrad command this skill should run. Import

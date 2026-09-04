@@ -7,7 +7,8 @@ description: Conduct one Tracegrad loop — import, estimate, propose, review, m
 
 Thin conductor over the other skills. Follow them; do not invent a parallel
 pipeline. Unattended apply is **off** unless a policy file is present **and**
-permits it. Otherwise stop at review and ask.
+permits it. Attended apply after explicit human indices is allowed; otherwise
+stop at review and ask.
 
 `tracegrad run` never writes the prompt. Only `tracegrad apply` does, and only
 after human or policy accept.
@@ -57,12 +58,17 @@ Invoke that skill instead.
 4. **Review** — follow [`../review-edits/SKILL.md`](../review-edits/SKILL.md).
 
    - Policy file missing, `unattended_apply` not true, `accept` empty, or any
-     rule ambiguous → **stop and ask**. Show the cards. Do not apply.
-   - Policy present **and** permits a specific `--accept` list → apply only
+     rule ambiguous → **stop and ask**. Show the cards. Do not apply
+     unattended.
+   - Human names indices in this conversation → attended apply of **only**
      those indices.
+   - Policy present **and** permits a specific `--accept` list → unattended
+     apply of **only** those indices.
 
    ```sh
-   tracegrad apply --accept 0,2
+   # Run only after HUMAN_OR_POLICY_INDICES is replaced with supplied integers.
+   # Do not substitute example numbers. Do not answer interactive [y/N].
+   tracegrad apply --accept <HUMAN_OR_POLICY_INDICES>
    ```
 
    Never invent accepts. Never `--all` as a shortcut.
@@ -130,9 +136,11 @@ tracegrad init
 # sidecar adapt-in → batch.jsonl
 tracegrad run --traces batch.jsonl --manifest manifest.json --estimate
 tracegrad run --traces batch.jsonl --manifest manifest.json
-# stop here unless policy/human named indices
-tracegrad apply --accept 0,2
-# sidecar adapt-out if the user path differs
+# STOP at review. Show cards. Do not apply, and do not invent --accept indices.
+# Apply is not part of this canonical sequence. If a human or policy has
+# already supplied indices, review-edits may run:
+#   tracegrad apply --accept <HUMAN_OR_POLICY_INDICES>
+# sidecar adapt-out only after a real apply
 tracegrad status --manifest manifest.json
 tracegrad trends
 ```

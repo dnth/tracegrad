@@ -1,16 +1,19 @@
 ---
 name: review-edits
-description: Show Tracegrad review cards and stop to ask the human. Apply only when a policy file clearly allows it. Use when asked to review, accept, or apply proposed edits. Never invent --accept indices.
+description: Show Tracegrad review cards and stop to ask the human. Apply only with tracegrad apply --accept after a human names indices, or when a policy file lists them. Never answer interactive y/N. Never invent --accept indices. Never use bare apply.
 ---
 
 # Review edits
 
 Show the cards from the latest proposal. **Default: stop and ask.** Fully
 unattended apply is off unless a policy file is present **and** permits it.
+Attended apply is allowed after the human names card indices.
 
-Only `tracegrad apply` writes the prompt. Do not edit the template by hand to
-"save a step". Do not pass `--all` unless a human-named policy lists every
-index.
+Only `tracegrad apply --accept <indices>` writes the prompt on the harness
+path. Do not edit the template by hand to "save a step". Do not pass `--all`
+unless a human-named policy lists every index. **Do not run bare
+`tracegrad apply`.** That form is interactive `[y/N]` per card; a TTY agent
+can answer those prompts itself. That is not a human-named accept.
 
 ## When to use
 
@@ -19,7 +22,8 @@ index.
 - `next-batch` reaches the review step.
 
 Do not use this skill to re-run attribution or to export; those are other
-skills. Do not apply if policy is missing or ambiguous.
+skills. Do not apply unattended if policy is missing or ambiguous. Attended
+apply still requires explicit human-named `--accept` indices.
 
 ## Steps
 
@@ -31,21 +35,21 @@ skills. Do not apply if policy is missing or ambiguous.
    printed by `tracegrad run`. Re-read `proposal.json` if the terminal scroll
    is gone. Do not call `apply --all` in order to "see" the result.
 
-3. **Default path — stop and ask.** List the indices and wait. A human types
-   which cards to accept. Then:
+3. **Default path — stop and ask.** List the card indices and wait. Do not
+   call `tracegrad apply` yet. Do not answer `[y/N]`. A human must type which
+   cards to accept (for example `0` and `2`). Only after those indices exist
+   in this conversation, substitute them and run:
 
    ```sh
-   tracegrad apply
+   tracegrad apply --accept <HUMAN_OR_POLICY_INDICES>
    ```
 
-   Interactive TTY: one `[y/N]` per card. Non-TTY without `--accept`/`--all`:
-   nothing is applied (exit 1). That is correct, not a prompt to guess.
-
-   After a human names indices:
-
-   ```sh
-   tracegrad apply --accept 0,2
-   ```
+   The placeholder is not an example list. Replace it with the integers the
+   human typed (or, on the policy path below, the integers the file listed).
+   **Forbidden for the harness agent:** bare `tracegrad apply`, answering
+   interactive `[y/N]`, piping `yes`/`y` into apply, or using `--all` to skip
+   naming indices. Non-TTY without `--accept`/`--all` applies nothing (exit
+   1); that is correct, not a prompt to guess or to switch to a TTY.
 
 4. **Policy path — optional, gated.** Read the project policy file (see
    [`../examples/policy.commented.toml`](../examples/policy.commented.toml)).
@@ -64,13 +68,13 @@ skills. Do not apply if policy is missing or ambiguous.
    Then, and only then:
 
    ```sh
-   tracegrad apply --accept 0,2
+   tracegrad apply --accept <HUMAN_OR_POLICY_INDICES>
    ```
 
    Use `--run-id` when the policy or user named a run:
 
    ```sh
-   tracegrad apply --run-id run-0001 --accept 0,2
+   tracegrad apply --run-id run-0001 --accept <HUMAN_OR_POLICY_INDICES>
    ```
 
 5. If any check fails or is ambiguous: **stop and ask**. Do not fall back to
@@ -117,24 +121,28 @@ Do not revert as part of ordinary review.
 | Failure | What to do |
 | --- | --- |
 | No proposal | Tell the user to run `propose-edits` first. `tracegrad apply` exits 1. |
-| Policy missing / `unattended_apply` false / omitted | Stop and ask. |
+| Policy missing / `unattended_apply` false / omitted | Do not apply unattended. Stop and ask. Attended `--accept` is allowed if the human named indices. |
 | `accept` empty, omitted, or contains unknown indices | Stop and ask. Never invent. |
 | Selected edit is `DELETE` and `allow_delete` is not true | Skip apply; stop and ask. |
 | Instruction id in policy `neverDelete` | Do not include it in `--accept`. If that empties the list, stop. |
 | `tokens_after` over `token_ceiling` | Stop and ask. |
 | "template changed … proposal is stale" | Do not `--force` apply. Re-run `propose-edits`. |
 | Non-TTY, no `--accept` | Nothing applied. Ask the human; do not switch to `--all`. |
+| TTY offers `[y/N]` / bare `tracegrad apply` | Do not answer. Stop and collect indices, then `--accept` only. |
 | `--all` looks convenient | Forbidden unless the policy's `accept` list is exactly every index a human already approved. Prefer `--accept` with that list. |
 
 ## Exact CLI
 
 ```sh
-tracegrad apply
-tracegrad apply --accept 0,2
-tracegrad apply --run-id run-0001 --accept 0
-tracegrad apply --project-root . --base-directory . --accept 0
+# Harness path — only after human-typed or policy-listed indices replace the placeholder:
+tracegrad apply --accept <HUMAN_OR_POLICY_INDICES>
+tracegrad apply --run-id run-0001 --accept <HUMAN_OR_POLICY_INDICES>
+tracegrad apply --project-root . --base-directory . --accept <HUMAN_OR_POLICY_INDICES>
+# Explicit user request to revert only:
 tracegrad apply --revert
-# Do not use unless a human-named policy lists every index:
+# Forbidden for the harness agent:
+# tracegrad apply
+# (do not answer interactive [y/N])
 # tracegrad apply --all
 ```
 
